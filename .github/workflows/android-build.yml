@@ -46,12 +46,26 @@ jobs:
         working-directory: upstream
         run: pnpm install --frozen-lockfile
 
-      - name: Build workspace packages (cli deps + server + web)
+      - name: Build workspace packages (cli deps + server + web + tui)
         working-directory: upstream
         run: |
           pnpm --filter @zcode/cli... build
           pnpm --filter @zcode/server... build
           pnpm --filter @zcode/web build
+          pnpm --filter @zcode/tui... build
+
+      - name: Stage @zcode/shared dist
+        working-directory: upstream
+        # The SEA TUI staging (build-zcode.mjs -> stageTuiRuntime) requires
+        # packages/shared/dist/index.js, but upstream has no build script for
+        # this package at the pinned commit. Compile it from the real source
+        # with esbuild so the staged artifact is genuine code, not a stub.
+        run: |
+          mkdir -p packages/shared/dist
+          pnpm exec esbuild packages/shared/src/index.ts \
+            --bundle --platform=node --format=esm \
+            --outfile=packages/shared/dist/index.js --log-level=warning
+          ls -la packages/shared/dist/
 
       - name: Build official ZCode CLI distribution
         working-directory: upstream
