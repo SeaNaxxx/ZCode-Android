@@ -96,10 +96,11 @@ jobs:
             echo "$pkg -> $f"
             curl -fsSL "$BASE/$f" -o "/tmp/$pkg.deb"
             mkdir -p "/tmp/ex/$pkg"
-            cd "/tmp/ex/$pkg"
-            ar x "/tmp/$pkg.deb"
-            if ls data.tar.zst >/dev/null 2>&1; then tar --zstd -xf data.tar.zst; else tar -xf data.tar.*; fi
-            cd /
+            (
+              cd "/tmp/ex/$pkg"
+              ar x "/tmp/$pkg.deb"
+              if ls data.tar.zst >/dev/null 2>&1; then tar --zstd -xf data.tar.zst; else tar -xf data.tar.*; fi
+            )
           done
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           cp /tmp/ex/proot/data/data/com.termux/files/usr/bin/proot \
