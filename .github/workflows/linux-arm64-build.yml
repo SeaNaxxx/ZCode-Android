@@ -1,0 +1,77 @@
+# Builds ZCode for linux/arm64 to supply the device runtime checks.
+# See docs/RUNTIME-CHECKS.md and docs/UPSTREAM-ANALYSIS.md §14.
+# Manual trigger only. The desktop-bundle step is experimental by design:
+# its failure is a recorded result (roadmap rule 5), not a blocker.
+
+name: linux-arm64-build
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout upstream at pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: zai-org/ZCode
+          ref: 3c5b227649371507ddc4eb46ac5133afe6db1cab
+          fetch-depth: 1
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup pnpm (version from upstream packageManager field)
+        uses: pnpm/action-setup@v4
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build agent distribution tree (linux/arm64)
+        run: pnpm build:zcode
+        env:
+          ZCODE_TARGET_OS: linux
+          ZCODE_TARGET_ARCH: arm64
+
+      - name: Bundle desktop app (linux/arm64) — experimental
+        id: desktop
+        continue-on-error: true
+        working-directory: packages/desktop
+        run: node scripts/bundle.mjs --os linux --arch arm64
+
+      - name: Stage artifacts
+        run: |
+          set -e
+          mkdir -p artifacts/agent-dist artifacts/desktop
+          if [ -d dist/zcode ]; then
+            cp -r dist/zcode/. artifacts/agent-dist/
+          else
+            echo "WARN: dist/zcode not found — listing repo root:"; ls -la
+          fi
+          find packages/desktop/dist -maxdepth 3 -type f \
+            \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) \
+            -print -exec cp {} artifacts/desktop/ \; 2>/dev/null || true
+          echo "--- staged ---"
+          du -sh artifacts/agent-dist artifacts/desktop || true
+
+      - name: Upload agent distribution tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcode-agent-dist-linux-arm64
+          path: artifacts/agent-dist/
+          if-no-files-found: error
+
+      - name: Upload desktop packages (may be empty if bundle failed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcode-desktop-linux-arm64
+          path: artifacts/desktop/
+          if-no-files-found: ignore

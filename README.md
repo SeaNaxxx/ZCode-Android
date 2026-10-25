@@ -36,6 +36,13 @@ Original project: https://github.com/zai-org/ZCode
 
 The upstream repository is a reference source. This repository is independent and is not a fork.
 
+## Docs
+
+- [docs/UPSTREAM-ANALYSIS.md](docs/UPSTREAM-ANALYSIS.md) — evidence-backed upstream source and distribution analysis (Phase 1, incl. §14 addendum: no official Linux ARM64 package exists; our CI builds it).
+- [docs/RUNTIME-CHECKS.md](docs/RUNTIME-CHECKS.md) — the three device gates before any Android code, with the execution protocol (all device rows NOT TESTED until executed).
+- [.github/workflows/linux-arm64-build.yml](.github/workflows/linux-arm64-build.yml) — manual CI build producing the linux/arm64 agent distribution tree and (experimental) desktop package used by the checks.
+- [device-checks/](device-checks/) — Termux check script and NDJSON protocol smoke client for running the checks on the phone.
+
 ## Current Status
 
 Initial project setup. Runtime architecture and Android device compatibility have not yet been validated.
