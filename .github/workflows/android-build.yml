@@ -48,7 +48,9 @@ jobs:
 
       - name: Build official ZCode CLI distribution
         working-directory: upstream
-        run: pnpm build:zcode
+        # --base-url is required by build-zcode.mjs (baked into latest.json /
+        # install.sh only); we embed the tarball directly, so a placeholder is fine.
+        run: pnpm build:zcode --base-url https://downloads.invalid/zcode-android/
 
       - name: Locate distribution artifacts
         id: dist
