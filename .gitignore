@@ -36,3 +36,8 @@ third_party/
 # Test output
 test-results/
 coverage/
+
+# Android build outputs
+android/**/build/
+android/**/.gradle/
+android/local.properties

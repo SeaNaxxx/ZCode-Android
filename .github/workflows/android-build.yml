@@ -1,0 +1,134 @@
+# Builds the first installable ZCode-Android debug APK.
+#
+# Pipeline (single job, ordered):
+#   1. Build the official ZCode CLI distribution from pinned upstream source.
+#   2. Resolve proot + libtalloc from the Termux packages repo (aarch64).
+#   3. Embed both into the Android app (assets / jniLibs) before Gradle runs.
+#   4. assembleDebug and upload the APK as an artifact.
+#
+# A green build proves compilation/packaging only — NOT device behavior.
+
+name: android-build
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout ZCode-Android
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream at pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: zai-org/ZCode
+          ref: 3c5b227649371507ddc4eb46ac5133afe6db1cab
+          path: upstream
+          fetch-depth: 1
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Install upstream dependencies
+        working-directory: upstream
+        run: pnpm install --frozen-lockfile
+
+      - name: Build official ZCode CLI distribution
+        working-directory: upstream
+        run: pnpm build:zcode
+
+      - name: Locate distribution artifacts
+        id: dist
+        run: |
+          set -e
+          TARBALL=$(find upstream/dist/zcode/releases -name 'zcode-*.tar.gz' | head -1)
+          test -n "$TARBALL" || { echo "dist tarball not found"; exit 1; }
+          SHA=$(sha256sum "$TARBALL" | awk '{print $1}')
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h "$TARBALL" | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "dist: $TARBALL sha256=$SHA"
+
+      - name: Resolve proot + libtalloc (Termux aarch64)
+        run: |
+          set -e
+          BASE=https://packages.termux.dev/apt/termux-main
+          curl -fsSL "$BASE/dists/stable/main/binary-aarch64/Packages" -o /tmp/Packages
+          for pkg in proot libtalloc; do
+            f=$(awk -v want="Package: $pkg" '$0==want{hit=1} hit&&/^Filename: /{print $2; exit}' /tmp/Packages)
+            test -n "$f" || { echo "could not resolve $pkg"; exit 1; }
+            echo "$pkg -> $f"
+            curl -fsSL "$BASE/$f" -o "/tmp/$pkg.deb"
+            mkdir -p "/tmp/ex/$pkg"
+            cd "/tmp/ex/$pkg"
+            ar x "/tmp/$pkg.deb"
+            if ls data.tar.zst >/dev/null 2>&1; then tar --zstd -xf data.tar.zst; else tar -xf data.tar.*; fi
+            cd /
+          done
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp /tmp/ex/proot/data/data/com.termux/files/usr/bin/proot \
+             android/app/src/main/jniLibs/arm64-v8a/libproot.so
+          LT=$(find /tmp/ex/libtalloc -name 'libtalloc.so*' | head -1)
+          test -n "$LT" || { echo "libtalloc binary not found in deb"; exit 1; }
+          cp "$LT" android/app/src/main/jniLibs/arm64-v8a/libtalloc.so
+          file android/app/src/main/jniLibs/arm64-v8a/libproot.so \
+               android/app/src/main/jniLibs/arm64-v8a/libtalloc.so
+
+      - name: Embed distribution into APK assets
+        run: |
+          set -e
+          mkdir -p android/app/assets/runtime
+          cp "${{ steps.dist.outputs.tarball }}" android/app/assets/runtime/zcode-dist.tar.gz
+          echo "${{ steps.dist.outputs.sha256 }}" > android/app/assets/runtime/zcode-dist.sha256
+          ls -la android/app/assets/runtime/
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK
+        id: apk
+        run: |
+          set -e
+          APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          test -n "$APK" || { echo "APK not found"; exit 1; }
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          ls -la "$APK"
+          echo "APK size: $(du -h "$APK" | cut -f1)"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcode-android-debug
+          path: ${{ steps.apk.outputs.apk }}
+          if-no-files-found: error
+
+      - name: Upload build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcode-build-metadata
+          path: |
+            android/app/src/main/assets/runtime/zcode-dist.sha256
+            android/app/build/outputs/apk/debug/output-metadata.json
+          if-no-files-found: warn
