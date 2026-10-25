@@ -13,7 +13,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.example.zcode_mobile.local.RuntimeBus
-import com.example.zcode_mobile.local.RuntimePaths
 import com.example.zcode_mobile.remote.RemoteControlKeepAliveService
 import com.example.zcode_mobile.remote.RemoteControlRecentLink
 import com.example.zcode_mobile.remote.RemoteControlRecentLinksStore
@@ -37,7 +36,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        RuntimePaths.initContext(this)
         if (BuildConfig.DEBUG) {
             android.webkit.WebView.setWebContentsDebuggingEnabled(true)
         }
