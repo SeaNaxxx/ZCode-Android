@@ -45,7 +45,12 @@ The upstream repository is a reference source. This repository is independent an
 
 ## Current Status
 
-Initial project setup. Runtime architecture and Android device compatibility have not yet been validated.
+First installable debug APK produced by CI (android-build workflow): Android shell
+reusing the official `packages/android` client (Apache-2.0) plus a local runtime that
+runs the ORIGINAL ZCode CLI distribution in web mode (`zcode --web`) inside a
+provisioned Linux ARM64 userland (proot + Ubuntu base + Node.js 24), shown in a WebView.
+
+CI build/packaging verified. Device execution is NOT TESTED yet.
 
 ## Development
 

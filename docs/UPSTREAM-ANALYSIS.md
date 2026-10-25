@@ -367,3 +367,11 @@ as a guaranteed pass (roadmap rule 5).
 
 Consequence for the owner-mandated three device checks: see `docs/RUNTIME-CHECKS.md`
 (verification instrument; all device rows NOT TESTED until executed).
+
+**Correction (2026-10-25, session evidence):** the official CDN *does* serve Linux
+ARM64 desktop packages outside GitHub Releases:
+`https://cdn-zcode.z.ai/zcode/electron/releases/3.16.3/linux-arm64/ZCode-3.16.3-linux-arm64.AppImage`
+returned HTTP 200, 219,414,870 bytes. §14's "no official Linux ARM64 package" claim is
+therefore narrowed to "none published on GitHub Releases"; official CDN Electron builds
+exist. This does not change the Path-A decision for v1 (web mode needs no Electron), but
+it does make a future Path-B (desktop GUI) source straightforward.
