@@ -84,8 +84,9 @@ object Provisioner {
             // 3. ZCode dist (embedded in APK by CI) ----------------------------
             RuntimeBus.setState(RuntimeState.Provisioning("staging official ZCode distribution", 65))
             val distSha = readAssetText(app, "runtime/zcode-dist.sha256").trim()
-            val distTar = File(work, "zcode-dist.tar.gz")
-            copyAsset(app, "runtime/zcode-dist.tar.gz", distTar)
+            // .tgz (not .gz): AAPT2 decompresses + strips .gz assets at build time.
+            val distTar = File(work, "zcode-dist.tgz")
+            copyAsset(app, "runtime/zcode-dist.tgz", distTar)
             verifySha256(distTar, distSha, "zcode-dist")
             RuntimeBus.setState(RuntimeState.Provisioning("extracting ZCode distribution", 72))
             extractTar(distTar.inputStream().let { GzipCompressorInputStream(it) }, opt)

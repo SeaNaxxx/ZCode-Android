@@ -114,8 +114,10 @@ jobs:
       - name: Embed distribution into APK assets
         run: |
           set -e
+          # NOTE: .gz assets are decompressed + extension-stripped by AAPT2;
+          # .tgz is passed through untouched. Provisioner reads this name.
           mkdir -p android/app/src/main/assets/runtime
-          cp "${{ steps.dist.outputs.tarball }}" android/app/src/main/assets/runtime/zcode-dist.tar.gz
+          cp "${{ steps.dist.outputs.tarball }}" android/app/src/main/assets/runtime/zcode-dist.tgz
           echo "${{ steps.dist.outputs.sha256 }}" > android/app/src/main/assets/runtime/zcode-dist.sha256
           ls -la android/app/src/main/assets/runtime/
 
@@ -145,7 +147,7 @@ jobs:
           echo "--- diagnostics: 10 largest entries ---"
           unzip -l "$APK" | sort -k1 -n -r | head -10 || true
           # unzip -Z1 prints full entry paths (unzip -l truncates long names).
-          unzip -Z1 "$APK" | grep -q "assets/runtime/zcode-dist.tar.gz" \
+          unzip -Z1 "$APK" | grep -q "assets/runtime/zcode-dist.tgz" \
             || { echo "FATAL: zcode dist tarball missing from APK assets"; exit 1; }
           unzip -Z1 "$APK" | grep -q "lib/arm64-v8a/libproot.so" \
             || { echo "FATAL: libproot.so missing from APK"; exit 1; }
