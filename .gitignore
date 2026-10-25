@@ -1,0 +1,38 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Android
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Node.js
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+
+# Runtime and downloaded dependencies
+.runtime/
+runtime-cache/
+downloads/
+third_party/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+
+# Test output
+test-results/
+coverage/
