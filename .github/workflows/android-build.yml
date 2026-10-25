@@ -138,11 +138,12 @@ jobs:
           APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
           test -n "$APK" || { echo "APK not found"; exit 1; }
           echo "APK: $APK size: $(du -h "$APK" | cut -f1)"
-          unzip -l "$APK" | grep -q "assets/runtime/zcode-dist.tar.gz" \
+          # unzip -Z1 prints full entry paths (unzip -l truncates long names).
+          unzip -Z1 "$APK" | grep -q "^assets/runtime/zcode-dist.tar.gz$" \
             || { echo "FATAL: zcode dist tarball missing from APK assets"; exit 1; }
-          unzip -l "$APK" | grep -q "lib/arm64-v8a/libproot.so" \
+          unzip -Z1 "$APK" | grep -q "^lib/arm64-v8a/libproot.so$" \
             || { echo "FATAL: libproot.so missing from APK"; exit 1; }
-          unzip -l "$APK" | grep -q "lib/arm64-v8a/libtalloc.so" \
+          unzip -Z1 "$APK" | grep -q "^lib/arm64-v8a/libtalloc.so$" \
             || { echo "FATAL: libtalloc.so missing from APK"; exit 1; }
           echo "APK content checks passed"
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
