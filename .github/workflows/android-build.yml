@@ -46,6 +46,13 @@ jobs:
         working-directory: upstream
         run: pnpm install --frozen-lockfile
 
+      - name: Build workspace packages (cli deps + server + web)
+        working-directory: upstream
+        run: |
+          pnpm --filter @zcode/cli... build
+          pnpm --filter @zcode/server... build
+          pnpm --filter @zcode/web build
+
       - name: Build official ZCode CLI distribution
         working-directory: upstream
         # --base-url is required by build-zcode.mjs (baked into latest.json /
