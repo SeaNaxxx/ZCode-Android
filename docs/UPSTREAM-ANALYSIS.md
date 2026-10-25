@@ -309,3 +309,61 @@ matrix.
   read-only git/API queries, exit code 0.
 - **Blockers**: none for Phase 1. Highest-risk technical question deferred to the §12
   experiment; device-level questions remain open by design.
+
+---
+
+## 14. Addendum — 2026-10-26: re-verification and the Linux desktop build path
+
+Trigger: an external analysis quoted by the project owner asserts that (a) ZCode
+officially ships Linux ARM64 packages (`.deb`/`.rpm`/`.AppImage`) and (b) references a
+version "3.16.3". Both claims were re-checked against live GitHub data on 2026-10-26.
+
+**Verified facts (second independent check):**
+
+- `GET /repos/zai-org/ZCode/tags` returns exactly two tags: `v3.15.1` (`aac4755666d0`)
+  and `v3.14.3` (`29628c9acdb8`). **No `v3.16.3` tag exists.**
+- `GET /repos/zai-org/ZCode/releases` returns exactly one published release, `v3.14.3`
+  (2026-09-24), with exactly two assets: `ZCode-3.14.3-win-x64.exe` (150,014,088 B) and
+  `ZCode-3.14.3-mac-arm64.dmg` (185,386,581 B). **No Linux assets are published.**
+- Consequence (correcting the record): an official Linux ARM64 package **does not exist
+  today**. Any Linux ARM64 desktop runtime must be built by this project from the pinned
+  upstream source (CI). This supersedes the external claim.
+
+**Verified facts — upstream's own pipeline anticipates Linux targets** (all @ `3c5b2276`,
+exit 0):
+
+- `packages/desktop/scripts/bundle.mjs:56,67-81` — OS alias `linux` → electron-builder
+  flag `--linux`; linux artifact extensions declared as
+  `[".AppImage", ".deb", ".rpm", ".pkg.tar.zst"]`.
+- `packages/desktop/electron-builder.config.js:561-562` — comment documents Linux `deb`
+  (fpm) metadata validation and patches `homepage`/`author.email` inline for it.
+- `packages/desktop/package.json` — `electron 41.0.3` (official linux-arm64 prebuilt
+  exists), `electron-builder ^26.8.1`, and **both** `@lydell/node-pty-linux-arm64@1.2.0-beta.10`
+  and `@lydell/node-pty-linux-x64@1.2.0-beta.10` as desktop dependencies.
+- Invocation (verified via `parseArgs`, `bundle.mjs:289-359`):
+  `node packages/desktop/scripts/bundle.mjs --os linux --arch arm64`
+  (env fallbacks `ZCODE_TARGET_OS` / `ZCODE_TARGET_ARCH`; defaults `mac`/`arm64`).
+- CLI distribution tree (non-Electron surface, §3/§5): root `package.json` script
+  `build:zcode` = `node scripts/build-zcode.mjs`.
+
+**New source detail relevant to Check 2 (login):**
+
+- A second deep link exists: `zcode://workspace/open`
+  (`packages/desktop/src/main/desktopOAuthDeepLink.ts:281`, comment), beside the OAuth
+  callback registration at `:412,431`.
+
+**Exact NDJSON frame schemas** captured for check clients
+(`packages/shared/src/zcode-protocol/index.ts:392-437`, all `.strict()`):
+
+- request: `{"id": string|int, "method": nonEmptyString, "params"?, "trace"?}`
+- notification: `{"method": nonEmptyString, "params"?, "trace"?}`
+- response: `{"id", "result"}` — error: `{"id", "error": {"code": int, "message", "data"?}}`
+
+**Unknowns recorded for the CI experiment (not asserted either way):** whether the linux
+prepare steps (`prepare:native-search`, `prepare:glm`, runtime-asset staging) complete on
+a public-CI linux host; whether electron-builder produces arm64 AppImage/deb artifacts
+cleanly; runtime behavior of the artifact. The first CI run is treated as evidence, not
+as a guaranteed pass (roadmap rule 5).
+
+Consequence for the owner-mandated three device checks: see `docs/RUNTIME-CHECKS.md`
+(verification instrument; all device rows NOT TESTED until executed).
