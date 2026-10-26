@@ -288,20 +288,28 @@ jobs:
           print((x1 + x2) // 2, (y1 + y2) // 2)
           PY
           ) || { sleep 3; continue; }
-                echo "tapping '$text' at ($c)"
+                echo "tapping '\''$text'\'' at ($c)"
                 adb shell input tap $c
                 return 0
               fi
+              dismiss_anr || true
               sleep 3
             done
             echo "UI text not found within ${2:-60}s: $text"
             return 1
           }
+          dismiss_anr() {
+            ui_dump || return 0
+            grep -q "isn't responding" "$LOGS_DIR/ui-dump.xml" 2>/dev/null || return 0
+            echo "ANR dialog detected -> tapping Wait"
+            ui_tap_text "Wait" 15 || adb shell input keyevent KEYCODE_ENTER || true
+            sleep 3
+          }
           shot() { adb exec-out screencap -p > "$LOGS_DIR/screen-$1.png" 2>/dev/null || true; }
           # stage_run runs stages via `bash -c` child shells — functions must
           # be exported or the child fails with "adb: command not found" (this
           # exact failure happened in run #1: classification = workflow/setup).
-          export -f _emit_result stage_run block adb ui_dump ui_has_text ui_tap_text shot
+          export -f _emit_result stage_run block adb ui_dump ui_has_text ui_tap_text dismiss_anr shot
           EOF
           # env wrapper executed ON DEVICE under run-as (E2 layout, app prefix)
           cat > /tmp/e2-run.sh <<EOF
@@ -356,9 +364,13 @@ jobs:
             yes | "$SDKM" --licenses > /dev/null 2>&1 || true
             "$SDKM" --install "$SYSTEM_IMAGE" emulator platform-tools > "$LOGS_DIR/sdkmanager.log" 2>&1
             echo no | "$AVDM" create avd -n e2x -k "$SYSTEM_IMAGE" -d pixel_5 --force > "$LOGS_DIR/avdmanager.log" 2>&1
+            # more CPU/RAM for the AVD: SystemUI ANRed under software rendering
+            # on the runner in run #3 (classification = workflow/setup)
+            { echo "hw.cpu.ncore=4"; echo "hw.ramSize=6144"; } >> "$ANDROID_AVD_HOME/e2x.avd/config.ini"
             nohup "$ANDROID_HOME/emulator/emulator" -avd e2x \
               -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
               -gpu swiftshader_indirect -accel on -partition-size 4096 \
+              -feature -Vulkan \
               > "$LOGS_DIR/emulator.log" 2>&1 &
             EMU_OK=0
             for i in $(seq 1 12); do
@@ -379,6 +391,9 @@ jobs:
             sleep 3
             timeout 120 adb wait-for-device || true
             adb shell setenforce 0
+            adb shell settings put global window_animation_scale 0.0 || true
+            adb shell settings put global transition_animation_scale 0.0 || true
+            adb shell settings put global animator_duration_scale 0.0 || true
             echo "sdk: $(adb shell getprop ro.build.version.sdk | tr -d "\r")  abi: $(adb shell getprop ro.product.cpu.abi | tr -d "\r")"
           '
           if [ ! -f "$RESULTS_DIR/emu-boot.json" ] || ! grep -q '"PASS"' "$RESULTS_DIR/emu-boot.json"; then
@@ -404,6 +419,10 @@ jobs:
               exit 1
             }
             adb shell svc power stayon usb || true
+            # settle time: SystemUI ANR dialogs right after install covered
+            # the app in run #3
+            sleep 20
+            dismiss_anr || true
             shot installed
           '
 
@@ -429,11 +448,13 @@ jobs:
           source /tmp/e2-stage-lib.sh
           stage_run setup-tap -- bash -c '
             set -e
+            sleep 10
+            dismiss_anr || true
             adb shell am start -n '"$PKG"'/.MainActivity > /dev/null
             sleep 6
             shot before-setup
             adb logcat -c || true
-            ui_tap_text "Set up local runtime" 60 || exit 1
+            ui_tap_text "Set up local runtime" 240 || exit 1
             OK=0
             for i in $(seq 1 160); do
               if ui_has_text "Ready"; then OK=1; echo "provisioned (Ready) after ~$((i*3))s"; break; fi
