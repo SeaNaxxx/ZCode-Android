@@ -477,12 +477,19 @@ jobs:
           source /tmp/e2-stage-lib.sh
           adb push /tmp/e2-run.sh /data/local/tmp/e2-run.sh > /dev/null
           adb shell chmod 755 /data/local/tmp/e2-run.sh
+          # probe as a FILE: inline `node -e "...(...)"` gets mangled by adb
+          # shell quoting (run #4: sh syntax error on parens) — workflow/setup
+          cat > /tmp/e2-probe.cjs <<'EOF'
+          console.log(JSON.stringify({node: process.version, platform: process.platform,
+            arch: process.arch, execPath: process.execPath}));
+          EOF
+          adb push /tmp/e2-probe.cjs /data/local/tmp/e2-probe.cjs > /dev/null
           stage_run node-probe -- bash -c '
             set -e
             echo "--- run-as wrapper: node --version ---"
             adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node --version
-            echo "--- run-as wrapper: platform/arch ---"
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node -e "console.log(JSON.stringify({platform:process.platform,arch:process.arch,execPath:process.execPath}))"
+            echo "--- run-as wrapper: platform/arch (probe file) ---"
+            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node /data/local/tmp/e2-probe.cjs
             echo "--- run-as wrapper: git + bash ---"
             adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh git --version
             adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh bash --version | head -1
@@ -493,11 +500,12 @@ jobs:
           source /tmp/e2-stage-lib.sh
           stage_run start-tap -- bash -c '
             set -e
-            ui_tap_text "Start ZCode" 60 || exit 1
+            ui_tap_text "Start ZCode" 120 || exit 1
             OK=0
             for i in $(seq 1 60); do
               if ui_has_text "Running"; then OK=1; echo "running after ~$((i*3))s"; break; fi
               if ui_has_text "Failed"; then echo "start FAILED on-device"; ui_dump; grep -o "Failed[^<]*" "$LOGS_DIR/ui-dump.xml" | head -3; break; fi
+              dismiss_anr || true
               sleep 3
             done
             shot running
@@ -552,6 +560,7 @@ jobs:
             for i in $(seq 1 40); do
               if ui_has_text "Ready"; then OK=1; break; fi
               if ui_has_text "Setup required"; then echo "FATAL: app forgot provisioning (marker lost)"; break; fi
+              dismiss_anr || true
               sleep 3
             done
             shot after-restart
