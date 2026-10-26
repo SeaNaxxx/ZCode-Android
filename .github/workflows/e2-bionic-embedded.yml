@@ -537,8 +537,10 @@ jobs:
             adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh cat '"$WS"'/bash-marker.txt
             adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh cat '"$WS"'/bash-marker.txt | grep -q "E1-BASH-OK" || { echo "ASSERT FAIL: bash marker"; exit 2; }
             echo "--- git commit (Bash tool) ---"
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh sh -c "cd $WS && git log -1 --format=%H%n%s"
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh sh -c "cd $WS && git log -1 --format=%s" | grep -q "E1-MOCK-COMMIT" || { echo "ASSERT FAIL: git commit"; exit 3; }
+            # flat args only: `sh -c "cd $WS && git ..."` lost its quoting
+            # through adb shell in run #5 (git ran un-wrapped) — workflow/setup
+            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh git -C $WS log -1 --format=%H%n%s
+            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh git -C $WS log -1 --format=%s | grep -q "E1-MOCK-COMMIT" || { echo "ASSERT FAIL: git commit"; exit 3; }
             echo "--- mock request log (on-device, evidence) ---"
             adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh tail -6 $RT/mock.log || true
             echo "ALL AGENT EFFECTS VERIFIED ON DEVICE"
