@@ -70,12 +70,47 @@ object RuntimePaths {
     /** proot + libtalloc ship as native libs so Android keeps them executable (jniLibs). */
     fun nativeLibDir(ctx: Context): String = ctx.applicationInfo.nativeLibraryDir
 
-    /** Simple, never-throwing provisioned check: marker + rootfs + dist entry. */
+    // ------------------------------------------------------------- E2 bionic
+    // Layout of the fully embedded Bionic runtime (no downloads, no proot):
+    //   <runtime>/usr/...       Termux-prefix bundle (node, git, bash, libs)
+    //   <runtime>/dist/zcode/   official ZCode distribution
+    //   <runtime>/bionic/       offline agent kit (mock provider + NDJSON driver)
+    //   <runtime>/home/         HOME (tmp/, .gitconfig)
+    //   <runtime>/zcode-data/   ZCODE_DATA_BASE_DIR (provider config, sessions)
+    fun usrDir(ctx: Context): File = File(runtimeDir(ctx), "usr")
+    fun distDir(ctx: Context): File = File(runtimeDir(ctx), "dist")
+    fun bionicKitDir(ctx: Context): File = File(runtimeDir(ctx), "bionic")
+    fun homeDir(ctx: Context): File = File(runtimeDir(ctx), "home").apply { mkdirs() }
+    fun dataDir(ctx: Context): File = File(runtimeDir(ctx), "zcode-data")
+    fun nodeBin(ctx: Context): File = File(usrDir(ctx), "bin/node")
+    fun bashBin(ctx: Context): File = File(usrDir(ctx), "bin/bash")
+    fun gitBin(ctx: Context): File = File(usrDir(ctx), "bin/git")
+    fun distWebEntry(ctx: Context): File = File(distDir(ctx), "zcode/bin/zcode.mjs")
+    fun distAgentEntry(ctx: Context): File = File(distDir(ctx), "zcode/agent/zcode.cjs")
+    fun providerConfig(ctx: Context): File =
+        File(File(dataDir(ctx), ".zcode/v2"), "provider_config.json")
+
+    /** Bionic runtime staged on disk? (node + bash + git + dist entries) */
+    fun isBionic(ctx: Context): Boolean = runCatching {
+        nodeBin(ctx).isFile && bashBin(ctx).isFile && gitBin(ctx).isFile &&
+            distAgentEntry(ctx).isFile
+    }.getOrDefault(false)
+
+    /** Does this APK embed the Bionic bundle (built by the E2 workflow)? */
+    fun hasBionicAssets(ctx: Context): Boolean = runCatching {
+        ctx.assets.list("runtime/bionic")?.contains("manifest.json") == true
+    }.getOrDefault(false)
+
+    /** Simple, never-throwing provisioned check: marker + layout entries. */
     fun provisioned(ctx: Context): Boolean = runCatching {
-        marker(ctx).isFile &&
+        if (!marker(ctx).isFile) return@runCatching false
+        if (hasBionicAssets(ctx)) {
+            isBionic(ctx)
+        } else {
             rootfs(ctx).isDirectory &&
-            File(rootfs(ctx), "opt/zcode/bin/zcode.mjs").isFile &&
-            File(rootfs(ctx), "opt/node/bin/node").isFile
+                File(rootfs(ctx), "opt/zcode/bin/zcode.mjs").isFile &&
+                File(rootfs(ctx), "opt/node/bin/node").isFile
+        }
     }.getOrDefault(false)
 
     fun distShaFile(ctx: Context): File = File(rootfs(ctx), "opt/zcode-dist.sha256")

@@ -1,6 +1,8 @@
 package com.example.zcode_mobile.ui
 
+import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
@@ -42,6 +44,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.zcode_mobile.BuildConfig
 import com.example.zcode_mobile.R
 import com.example.zcode_mobile.local.LocalServerService
 import com.example.zcode_mobile.local.Provisioner
@@ -53,6 +56,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Local-mode UI: honest runtime status, setup, start/stop, the OFFICIAL ZCode
@@ -123,12 +129,21 @@ fun LocalApp(
         when (val s = state) {
             is RuntimeState.NotProvisioned -> {
                 StatusCard("Setup required")
-                Text(
-                    "First run downloads and verifies: Ubuntu base (arm64) + Node.js " +
-                        "${RuntimePaths.NODE_VERSION} (checksums verified), then stages the official " +
-                        "ZCode distribution embedded in this APK. Needs a few hundred MB of storage.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                if (RuntimePaths.hasBionicAssets(context)) {
+                    Text(
+                        "First run extracts the fully embedded Bionic runtime from this APK: " +
+                            "Node.js 24.22.1 + git + bash (Termux Bionic build, checksum-verified) and " +
+                            "the official ZCode distribution. No downloads — works in airplane mode.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } else {
+                    Text(
+                        "First run downloads and verifies: Ubuntu base (arm64) + Node.js " +
+                            "${RuntimePaths.NODE_VERSION} (checksums verified), then stages the official " +
+                            "ZCode distribution embedded in this APK. Needs a few hundred MB of storage.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
                 Button(
                     onClick = {
                         scope.launch { Provisioner.provision(context) }
@@ -220,6 +235,21 @@ fun LocalApp(
             TextButton(onClick = onOpenRemote) { Text("Remote control (official)") }
         }
 
+        OutlinedButton(
+            onClick = {
+                val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "ZCode E2 diagnostics $stamp")
+                    putExtra(Intent.EXTRA_TEXT, buildDiagnostics(context))
+                }
+                runCatching {
+                    context.startActivity(Intent.createChooser(send, "Share diagnostics"))
+                }.onFailure { RuntimeBus.append("diagnostics share failed: ${it.message}") }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Share diagnostics") }
+
         Text("Runtime log", style = MaterialTheme.typography.titleSmall)
         LogConsole(logLines)
     }
@@ -228,6 +258,37 @@ fun LocalApp(
 @Composable
 private fun StatusCard(text: String) {
     Text(text, style = MaterialTheme.typography.titleMedium)
+}
+
+/**
+ * Evidence export for the on-device test protocol. Deliberately EXCLUDES
+ * provider config / credentials — secrets must never land in diagnostics.
+ */
+private fun buildDiagnostics(context: android.content.Context): String {
+    val sb = StringBuilder()
+    val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+    sb.appendLine("ZCode-Android E2 diagnostics — $ts")
+    sb.appendLine(
+        "device: ${Build.MANUFACTURER} ${Build.MODEL} | Android ${Build.VERSION.RELEASE} " +
+            "(SDK ${Build.VERSION.SDK_INT})"
+    )
+    sb.appendLine("abis: ${Build.SUPPORTED_ABIS.joinToString(",")}")
+    sb.appendLine("app: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+    sb.appendLine("embedded bionic bundle: ${RuntimePaths.hasBionicAssets(context)}")
+    sb.appendLine("runtime provisioned: ${RuntimePaths.provisioned(context)}")
+    RuntimePaths.marker(context).takeIf { it.isFile }?.let {
+        sb.appendLine("marker: ${it.readText().take(500)}")
+    }
+    sb.appendLine("workspace: ${RuntimePaths.workspace(context).absolutePath}")
+    val files = RuntimePaths.workspace(context).listFiles()
+    sb.appendLine(
+        "workspace files: " +
+            (files?.joinToString(", ") { "${it.name}(${it.length()}B)" } ?: "<none>")
+    )
+    sb.appendLine("--- runtime log (last 150 lines) ---")
+    RuntimeBus.log.value.takeLast(150).forEach { sb.appendLine(it) }
+    sb.appendLine("--- provider config / credentials are NOT included in this export ---")
+    return sb.toString()
 }
 
 @Composable

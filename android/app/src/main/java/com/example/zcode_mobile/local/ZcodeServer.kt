@@ -10,19 +10,26 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Runs the ORIGINAL ZCode distribution in web mode inside the provisioned
- * Linux ARM64 userland:
+ * Runs the ORIGINAL ZCode distribution in web mode.
  *
+ * E2 bionic mode (fully embedded runtime, no proot):
+ *   <runtime>/usr/bin/node <runtime>/dist/zcode/bin/zcode.mjs --web --no-open \
+ *     --host 127.0.0.1 --port 3030 --workspace <filesDir>/workspace
+ *   plus the embedded offline mock provider (127.0.0.1:9999) when the offline
+ *   agent kit is present — the agent loop then works with no network and no
+ *   API key (model-service auth/billing NOT exercised; separate test).
+ *
+ * Legacy proot mode (APKs without the bionic bundle):
  *   proot -r <rootfs> -0 -w /root -b /dev -b /proc -b /sys -b <workspace>:/workspace \
  *     /opt/node/bin/node /opt/zcode/bin/zcode.mjs --web --no-open \
  *     --host 127.0.0.1 --port 3030 --workspace /workspace
  *
- * proot and libtalloc come from jniLibs (executable by Android by construction);
- * Node and the dist live in the rootfs. The web server binds loopback only.
+ * The web server binds loopback only.
  */
 object ZcodeServer {
 
     @Volatile private var process: Process? = null
+    @Volatile private var mockProcess: Process? = null
     @Volatile private var healthThread: Thread? = null
 
     val isRunning: Boolean
@@ -37,6 +44,11 @@ object ZcodeServer {
         }
         RuntimeBus.setState(RuntimeState.Starting)
         stopInternal()
+
+        if (RuntimePaths.isBionic(app)) {
+            startBionic(app)
+            return@withContext
+        }
 
         val rootfs = RuntimePaths.rootfs(app).absolutePath
         val workspace = RuntimePaths.workspace(app).absolutePath
@@ -128,6 +140,103 @@ object ZcodeServer {
         }
     }
 
+    /**
+     * Bionic start path: (1) offline mock provider on 127.0.0.1:9999 when the
+     * offline agent kit is staged, (2) the official dist's web entry via the
+     * embedded Bionic node, real workspace path (no proot mapping).
+     */
+    private fun startBionic(app: Context) {
+        val workspace = RuntimePaths.workspace(app).absolutePath
+        val kit = RuntimePaths.bionicKitDir(app)
+        val mockScript = File(kit, "e1-mock-server.cjs")
+        if (mockScript.isFile && RuntimePaths.providerConfig(app).isFile) {
+            RuntimeBus.append("starting embedded mock provider :9999 (offline agent loop; auth/billing NOT exercised)")
+            val mpb = ProcessBuilder(
+                RuntimePaths.nodeBin(app).absolutePath, mockScript.absolutePath,
+                "--port", "9999",
+                "--log", File(RuntimePaths.runtimeDir(app), "mock.log").absolutePath,
+                "--workspace", workspace
+            )
+            mpb.redirectErrorStream(true)
+            Provisioner.applyBionicEnv(mpb.environment(), app)
+            val mp = mpb.start()
+            mockProcess = mp
+            Thread {
+                try {
+                    mp.inputStream.bufferedReader().use { r: BufferedReader ->
+                        while (true) { val line = r.readLine() ?: break; RuntimeBus.append("mock| $line") }
+                    }
+                } catch (_: Exception) {}
+            }.apply { isDaemon = true }.start()
+            var mockUp = false
+            val mockDeadline = System.currentTimeMillis() + 15_000L
+            while (System.currentTimeMillis() < mockDeadline) {
+                if (!mp.isAlive) break
+                if (httpOk("http://127.0.0.1:9999/healthz")) { mockUp = true; break }
+                Thread.sleep(500)
+            }
+            if (!mockUp) {
+                stopInternal()
+                throw IOException("embedded mock provider did not become healthy (offline agent loop disabled)")
+            }
+            RuntimeBus.append("mock provider healthy (loopback only)")
+        } else {
+            RuntimeBus.append("no offline agent kit — web server only")
+        }
+
+        try {
+            val command = listOf(
+                RuntimePaths.nodeBin(app).absolutePath,
+                RuntimePaths.distWebEntry(app).absolutePath,
+                "--web", "--no-open",
+                "--host", "127.0.0.1",
+                "--port", RuntimePaths.SERVER_PORT.toString(),
+                "--workspace", workspace
+            )
+            RuntimeBus.append("spawning bionic runtime: ${command.joinToString(" ")}")
+            val pb = ProcessBuilder(command)
+            pb.redirectErrorStream(true)
+            Provisioner.applyBionicEnv(pb.environment(), app)
+            val proc = pb.start()
+            process = proc
+
+            Thread {
+                try {
+                    proc.inputStream.bufferedReader().use { r: BufferedReader ->
+                        while (true) { val line = r.readLine() ?: break; RuntimeBus.append("agent| $line") }
+                    }
+                } catch (_: Exception) {}
+                if (!RuntimeBus.state.value.let { it is RuntimeState.Running || it is RuntimeState.Stopped }) {
+                    RuntimeBus.append("runtime process exited")
+                }
+            }.apply { isDaemon = true }.start()
+
+            val url = RuntimePaths.SERVER_URL
+            val deadline = System.currentTimeMillis() + 120_000L
+            var healthy = false
+            while (System.currentTimeMillis() < deadline) {
+                if (!proc.isAlive) {
+                    RuntimeBus.append("process died during startup (exit=${proc.exitValue()})")
+                    break
+                }
+                if (httpOk(url)) { healthy = true; break }
+                Thread.sleep(2_000)
+            }
+            if (healthy) {
+                RuntimeBus.setState(RuntimeState.Running(url))
+                return
+            }
+            throw IOException(
+                if (!proc.isAlive) "server exited during startup (see log console)"
+                else "server did not become healthy within 120s (see log console)"
+            )
+        } catch (t: Throwable) {
+            stopInternal()
+            RuntimeBus.append("start failed: ${t.message}")
+            RuntimeBus.setState(RuntimeState.Failed("start", "${t.message}"))
+        }
+    }
+
     fun stop() {
         stopInternal()
         if (RuntimeBus.state.value is RuntimeState.Running ||
@@ -140,6 +249,9 @@ object ZcodeServer {
     private fun stopInternal() {
         healthThread?.interrupt()
         healthThread = null
+        runCatching { mockProcess?.destroy() }
+        runCatching { mockProcess?.destroyForcibly() }
+        mockProcess = null
         runCatching { process?.destroy() }
         Thread.sleep(150)
         runCatching { process?.destroyForcibly() }

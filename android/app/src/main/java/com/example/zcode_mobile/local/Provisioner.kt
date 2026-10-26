@@ -18,9 +18,17 @@ import java.nio.file.Path
 import java.security.MessageDigest
 
 /**
- * Provisions the local Linux ARM64 userland that runs the ORIGINAL ZCode
- * distribution (`zcode --web`):
+ * Provisions the local Linux userland that runs the ORIGINAL ZCode
+ * distribution (`zcode --web`).
  *
+ * E2 bionic mode (this APK embeds `runtime/bionic/`, built by CI):
+ *   everything is embedded in the APK at build time — Termux Bionic userspace
+ *   closure (node 24.22.1, git, bash + shared-lib closure, sha256-verified
+ *   per deb by the E2 bundle builder) + the official ZCode distribution + the
+ *   offline agent kit (mock provider + NDJSON driver). ZERO network access —
+ *   provisioning must succeed in airplane mode.
+ *
+ * Legacy proot mode (kept unchanged for APKs built without the bundle):
  *   downloaded (public, checksum-verified):
  *     - Ubuntu base 24.04.3 arm64 rootfs   (cdimage.ubuntu.com, SHA256SUMS)
  *     - Node.js 24.14.0 linux-arm64        (nodejs.org, SHASUMS256.txt)
@@ -41,6 +49,11 @@ object Provisioner {
     suspend fun provision(ctx: Context) = withContext(Dispatchers.IO) {
         val app = ctx.applicationContext
         try {
+            // E2 bionic mode: fully embedded, zero network, no proot.
+            if (RuntimePaths.hasBionicAssets(app)) {
+                provisionBionic(app)
+                return@withContext
+            }
             RuntimeBus.setState(RuntimeState.Provisioning("preparing directories", 2))
             val root = RuntimePaths.rootfs(app)
             root.deleteRecursively()
@@ -113,6 +126,151 @@ object Provisioner {
             RuntimeBus.append("provisioning failed: ${t.javaClass.simpleName}: ${t.message}")
             RuntimeBus.setState(RuntimeState.Failed("setup", "${t.message ?: t.javaClass.simpleName}"))
         }
+    }
+
+    // ------------------------------------------------------------ E2 bionic
+
+    /** True when the APK embeds the offline agent kit (mock provider + driver). */
+    fun hasAsset(ctx: Context, name: String): Boolean = runCatching {
+        ctx.assets.open(name).use { true }
+    }.getOrDefault(false)
+
+    /**
+     * Fully offline provisioning from APK-embedded assets:
+     *   1. verify + extract the Bionic prefix bundle (usr/bin/node, git, bash, libs)
+     *   2. verify + extract the official ZCode distribution (dist/zcode/...)
+     *   3. stage the offline agent kit (mock provider + NDJSON driver)
+     *   4. GATE: run the embedded node on THIS device (proves Bionic exec works;
+     *      records version/platform/arch in the marker and the log)
+     *   5. seed provider config (mock) + git identity
+     * Any failure reports its stage — nothing is faked.
+     */
+    private fun provisionBionic(app: Context) {
+        val rt = RuntimePaths.runtimeDir(app)
+        RuntimeBus.setState(RuntimeState.Provisioning("preparing directories (embedded bionic)", 2))
+        val usr = RuntimePaths.usrDir(app); usr.deleteRecursively()
+        val dist = RuntimePaths.distDir(app); dist.deleteRecursively()
+        val home = RuntimePaths.homeDir(app)
+        val work = File(rt, "downloads").apply { mkdirs() }
+
+        // 1. Bionic prefix bundle (embedded) --------------------------------
+        RuntimeBus.setState(RuntimeState.Provisioning("verifying embedded Bionic bundle", 10))
+        val bundleSha = readAssetText(app, "runtime/bionic/prefix.sha256").trim()
+        val bundleTar = File(work, "prefix.tgz")
+        copyAsset(app, "runtime/bionic/prefix.tgz", bundleTar)
+        verifySha256(bundleTar, bundleSha, "bionic-prefix")
+        RuntimeBus.setState(RuntimeState.Provisioning("extracting Bionic runtime (node/git/bash)", 25))
+        // tar root is usr/ -> lands at <runtime>/usr
+        extractTar(bundleTar.inputStream().let { GzipCompressorInputStream(it) }, rt)
+        File(usr, "bin").listFiles()?.forEach { f ->
+            if (f.isFile && !java.nio.file.Files.isSymbolicLink(f.toPath())) {
+                f.setExecutable(true, false)
+            }
+        }
+        if (!RuntimePaths.nodeBin(app).isFile || !RuntimePaths.bashBin(app).isFile) {
+            throw IOException("bionic bundle layout unexpected (usr/bin/node or usr/bin/bash missing)")
+        }
+
+        // 2. Official ZCode distribution (embedded) -------------------------
+        RuntimeBus.setState(RuntimeState.Provisioning("staging official ZCode distribution", 45))
+        val distSha = readAssetText(app, "runtime/zcode-dist.sha256").trim()
+        val distTar = File(work, "zcode-dist.tgz")
+        copyAsset(app, "runtime/zcode-dist.tgz", distTar)
+        verifySha256(distTar, distSha, "zcode-dist")
+        RuntimeBus.setState(RuntimeState.Provisioning("extracting ZCode distribution", 55))
+        dist.mkdirs()
+        // tar root is zcode/ -> lands at <runtime>/dist/zcode
+        extractTar(distTar.inputStream().let { GzipCompressorInputStream(it) }, dist)
+        if (!RuntimePaths.distAgentEntry(app).isFile || !RuntimePaths.distWebEntry(app).isFile) {
+            throw IOException("zcode dist layout unexpected (agent/zcode.cjs or bin/zcode.mjs missing)")
+        }
+
+        // 3. Offline agent kit (mock provider + driver), if embedded --------
+        val hasMockKit = hasAsset(app, "runtime/bionic/e1-mock-server.cjs")
+        if (hasMockKit) {
+            RuntimeBus.setState(RuntimeState.Provisioning("staging offline agent kit", 65))
+            val kit = RuntimePaths.bionicKitDir(app).apply { mkdirs() }
+            for (n in listOf("e1-mock-server.cjs", "e1-driver.cjs", "e1-provider-config.json")) {
+                copyAsset(app, "runtime/bionic/$n", File(kit, n))
+            }
+        }
+
+        // 4. ARM64/Bionic gate: the embedded node must run on THIS device ---
+        RuntimeBus.setState(RuntimeState.Provisioning("checking Node.js on this device", 75))
+        val probe = runNodeProbe(app)
+        RuntimeBus.append("device-side node probe: $probe")
+
+        // 5. Provider config (mock) + git identity --------------------------
+        File(home, "tmp").mkdirs()
+        RuntimePaths.dataDir(app).mkdirs()
+        if (hasMockKit) {
+            val pc = RuntimePaths.providerConfig(app)
+            pc.parentFile?.mkdirs()
+            copyAsset(app, "runtime/bionic/e1-provider-config.json", pc)
+            RuntimeBus.append("offline mock provider config seeded at ${pc.absolutePath}")
+            RuntimeBus.append("NOTE: model-service auth/billing is NOT exercised (mock); real provider is a separate test")
+        }
+        File(home, ".gitconfig").writeText(
+            "[user]\n\tname = ZCode Device\n\temail = device@localhost\n"
+        )
+
+        // 6. Marker -----------------------------------------------------------
+        RuntimeBus.setState(RuntimeState.Provisioning("finalizing", 95))
+        RuntimePaths.marker(app).writeText(
+            """{"mode":"bionic","nodeProbe":"$probe","distSha256":"$distSha",""" +
+                """"bundleSha256":"$bundleSha","provisionedAt":${System.currentTimeMillis()}}"""
+        )
+        work.deleteRecursively()
+        RuntimeBus.setState(RuntimeState.Ready)
+    }
+
+    /**
+     * Runs the embedded node ON THIS DEVICE and returns
+     * "v24.22.1 linux <arch>". This is the ARM64/Bionic compatibility gate:
+     * a failure here is classified as exec/arch incompatibility, not as a
+     * network or test-setup error.
+     */
+    private fun runNodeProbe(app: Context): String {
+        val pb = ProcessBuilder(
+            RuntimePaths.nodeBin(app).absolutePath, "-e",
+            "console.log(process.version + ' ' + process.platform + ' ' + process.arch)"
+        )
+        pb.redirectErrorStream(true)
+        applyBionicEnv(pb.environment(), app)
+        val proc = pb.start()
+        val out = proc.inputStream.bufferedReader().readText().trim()
+        val code = proc.waitFor()
+        if (code != 0) {
+            throw IOException("embedded node failed on this device (exit $code): ${out.take(300)}")
+        }
+        return out.take(200)
+    }
+
+    /**
+     * Environment for every Bionic process (provision probe, mock provider,
+     * web server, agent children). Mirrors the proven E0/E1 wrapper
+     * (emu-run.sh) adapted to the app-owned non-canonical prefix.
+     */
+    internal fun applyBionicEnv(env: MutableMap<String, String>, app: Context) {
+        val usr = RuntimePaths.usrDir(app)
+        val home = RuntimePaths.homeDir(app)
+        env["PREFIX"] = usr.absolutePath
+        env["HOME"] = home.absolutePath
+        env["TMPDIR"] = File(home, "tmp").absolutePath
+        env["PATH"] = "${usr.absolutePath}/bin:/system/bin:/system/xbin"
+        env["LD_LIBRARY_PATH"] = "${usr.absolutePath}/lib"
+        env["SHELL"] = RuntimePaths.bashBin(app).absolutePath
+        env["LANG"] = "C.UTF-8"
+        env["NODE_OPTIONS"] = ""
+        env["PAGER"] = "cat"
+        env["GIT_PAGER"] = "cat"
+        env["GIT_EXEC_PATH"] = "${usr.absolutePath}/libexec/git-core"
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        val cert = File(usr, "etc/tls/cert.pem")
+        if (cert.isFile) {
+            env["SSL_CERT_FILE"] = cert.absolutePath
+        }
+        env["ZCODE_DATA_BASE_DIR"] = RuntimePaths.dataDir(app).absolutePath
     }
 
     // ------------------------------------------------------------------ HTTP
