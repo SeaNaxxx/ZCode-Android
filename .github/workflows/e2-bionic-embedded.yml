@@ -298,6 +298,10 @@ jobs:
             return 1
           }
           shot() { adb exec-out screencap -p > "$LOGS_DIR/screen-$1.png" 2>/dev/null || true; }
+          # stage_run runs stages via `bash -c` child shells — functions must
+          # be exported or the child fails with "adb: command not found" (this
+          # exact failure happened in run #1: classification = workflow/setup).
+          export -f _emit_result stage_run block adb ui_dump ui_has_text ui_tap_text shot
           EOF
           # env wrapper executed ON DEVICE under run-as (E2 layout, app prefix)
           cat > /tmp/e2-run.sh <<EOF
@@ -387,7 +391,9 @@ jobs:
           stage_run install -- bash -c '
             set -e
             APK=$(ls /tmp/e2-apks/zcode-e2-x86_64-debug.apk)
-            adb install -r "$APK" 2>&1 | tee "$LOGS_DIR/install.log"
+            # no pipe here: a pipeline would mask adb install failure (tee exits 0)
+            adb install -r "$APK" > "$LOGS_DIR/install.log" 2>&1 || { cat "$LOGS_DIR/install.log"; exit 1; }
+            cat "$LOGS_DIR/install.log"
             adb shell svc power stayon usb || true
             shot installed
           '
