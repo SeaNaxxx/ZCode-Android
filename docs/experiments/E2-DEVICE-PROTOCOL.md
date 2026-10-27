@@ -123,3 +123,15 @@
 - exec من ملفات التطبيق على Vivo (Funtouch) تحديدًا
 - سلوك البطارية/إدارة العمليات في vivo مع الخدمة الأمامية
 - استقرار WebView مع واجهة ZCode على Funtouch
+
+## ما الجديد في rc2 (0.3.1-e2) وكيف تقرأ السجل
+
+- روابط soname الحرجة (libz.so.1، libicuuc.so.78، ...) تُشحن الآن كملفات
+  حقيقية (hard links) — لا يعود الـlinker يعتمد على إنشاء symlinks.
+- إذا رفض الجهاز إنشاء symlinks سترى الآن السبب الحقيقي:
+  `symlink FAILED: <name> (<Exception>: <message>)` (أول 3) ثم سطر إجمالي —
+  انسخه كما هو في التقرير؛ يحدد التصنيف (3) بدقة.
+- إذا نقص ملف حرج رغم ذلك: `bionic runtime incomplete on device: missing
+  usr/lib/<name>` قبل أي خطأ linker غامض.
+- فشل node-probe مع `CANNOT LINK` = ملف مضمّن مفقود على الجهاز (تصنيف 2/3) —
+  ليس حكمًا على Bionic.
