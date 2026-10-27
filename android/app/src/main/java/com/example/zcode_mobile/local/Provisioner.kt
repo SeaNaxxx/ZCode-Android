@@ -40,6 +40,9 @@ import java.security.MessageDigest
  */
 object Provisioner {
 
+    /** Worst-case on-device copy fallback when a device refuses link() too. */
+    private val HARDLINK_COPY_BUDGET_BYTES: Long = 200L * 1024 * 1024
+
     private const val NODE_SHASUMS = "https://nodejs.org/dist/v${RuntimePaths.NODE_VERSION}/SHASUMS256.txt"
     private const val UBUNTU_SHA_URL =
         "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/SHA256SUMS"
@@ -407,11 +410,6 @@ object Provisioner {
         var hardlinkCopySkipped = 0
         var fallbackBytes = 0L
         var firstError: String? = null
-    }
-
-    /** Worst-case on-device copy fallback when a device refuses link() too. */
-    private companion object {
-        const val HARDLINK_COPY_BUDGET_BYTES: Long = 200L * 1024 * 1024
     }
 
     private fun extractTar(

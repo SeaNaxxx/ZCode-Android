@@ -145,7 +145,7 @@ jobs:
           echo "${{ steps.dist.outputs.sha256 }}" > android/app/src/main/assets/runtime/zcode-dist.sha256
           ls -la android/app/src/main/assets/runtime android/app/src/main/assets/runtime/bionic
           ( cd android && chmod +x gradlew && ./gradlew :app:assembleDebug --no-daemon --stacktrace ) \
-            > "$LOGS_DIR/gradle-arm64.log" 2>&1 || { tail -n 60 "$LOGS_DIR/gradle-arm64.log"; exit 1; }
+            > "$LOGS_DIR/gradle-arm64.log" 2>&1 || { tail -n 250 "$LOGS_DIR/gradle-arm64.log"; exit 1; }
           APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
           cp "$APK" "$LOGS_DIR/zcode-e2-arm64-debug.apk"
           echo "arm64 APK: $(du -h "$APK" | cut -f1)"
@@ -176,7 +176,7 @@ jobs:
           cp "$LOGS_DIR/bundle-out/prefix-x86_64.critical.txt" android/app/src/main/assets/runtime/bionic/prefix.critical.txt
           cp "$LOGS_DIR/bundle-out/manifest-x86_64.json" android/app/src/main/assets/runtime/bionic/manifest.json
           ( cd android && chmod +x gradlew && ./gradlew clean :app:assembleDebug --no-daemon --stacktrace ) \
-            > "$LOGS_DIR/gradle-x86_64.log" 2>&1 || { tail -n 60 "$LOGS_DIR/gradle-x86_64.log"; exit 1; }
+            > "$LOGS_DIR/gradle-x86_64.log" 2>&1 || { tail -n 250 "$LOGS_DIR/gradle-x86_64.log"; exit 1; }
           APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
           cp "$APK" "$LOGS_DIR/zcode-e2-x86_64-debug.apk"
           unzip -Z1 "$APK" | grep -qx "assets/runtime/bionic/prefix.tgz" \
