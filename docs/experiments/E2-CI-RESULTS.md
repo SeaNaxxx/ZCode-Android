@@ -126,3 +126,23 @@ Local validation (no Android SDK locally; CI compiles + reruns AVD):
 - Worst case (symlinks AND hardlinks refused): critical gate still passes
   inside the 200MB copy budget; only non-critical git-core helper copies are
   skipped (git builtins unaffected).
+
+## Run 40555932163 (fix verification, x86_64 AVD)
+
+- build: SUCCESS — aarch64 359 / x86_64 361 symlinks materialized into hard
+  links; audit OK on stage AND re-extracted tar (501/502 ELFs, 36
+  linker-critical real files); APK 176.1 MiB arm64 / 175.5 MiB x86_64
+  (unchanged vs pre-fix — hardlink entries carry no payload).
+- Release `e2-rc2` published with both APKs as DIRECT .apk assets (owner
+  request: no combined zip).
+- verify: 8/9 PASS — install/offline/setup-tap/node-probe/start-tap/e2-agent/
+  e2-verify all green with the hard-link bundle (offline, agent loop, disk
+  effects re-verified). persistence FAIL classified **workflow/setup**:
+  screenshot `screen-after-restart.png` shows the app IN "Ready" state with
+  the Android-13 POST_NOTIFICATIONS system dialog covering the window, hiding
+  app texts from uiautomator. Fix: pre-grant POST_NOTIFICATIONS after install
+  + defensively tap "Don't allow" in the persistence stage. App state, marker,
+  and workspace were intact (visually proven) — no re-provision happened.
+- Intermediate failure of build (run 40552242105) classified **app bug**:
+  `companion object` not applicable inside a standalone object (Kotlin 2.2.10)
+  — caught by standalone frontend compile, fixed in bcedf85.

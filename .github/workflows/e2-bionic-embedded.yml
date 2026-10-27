@@ -466,6 +466,11 @@ jobs:
               adb logcat -d 2>/dev/null | tail -30 || true
               exit 1
             }
+            # Android 13 POST_NOTIFICATIONS: the app asks on service (re)start;
+            # the system dialog would cover the app window and hide its texts
+            # from uiautomator (persistence FAIL in run 40555932163 —
+            # screenshot proved Ready state behind the dialog). Pre-grant it.
+            adb shell pm grant '"$PKG"' android.permission.POST_NOTIFICATIONS 2>/dev/null || true
             adb shell svc power stayon usb || true
             # settle time: SystemUI ANR dialogs right after install covered
             # the app in run #3
@@ -606,6 +611,13 @@ jobs:
             sleep 3
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
             sleep 8
+            # belt-and-braces: if the POST_NOTIFICATIONS dialog still pops
+            # (grant raced), dismiss it — it covers the app window
+            if ui_has_text "send you notifications"; then
+              echo "notification permission dialog detected -> Don't allow"
+              ui_tap_text "Don't allow" 10 || true
+              sleep 2
+            fi
             OK=0
             for i in $(seq 1 40); do
               if ui_has_text "Ready"; then OK=1; break; fi
