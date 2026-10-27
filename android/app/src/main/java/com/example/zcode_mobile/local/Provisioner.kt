@@ -161,7 +161,21 @@ object Provisioner {
         verifySha256(bundleTar, bundleSha, "bionic-prefix")
         RuntimeBus.setState(RuntimeState.Provisioning("extracting Bionic runtime (node/git/bash)", 25))
         // tar root is usr/ -> lands at <runtime>/usr
-        extractTar(bundleTar.inputStream().let { GzipCompressorInputStream(it) }, rt)
+        val bundleReport = ExtractReport()
+        extractTar(bundleTar.inputStream().let { GzipCompressorInputStream(it) }, rt, bundleReport)
+        if (bundleReport.symlinkFailures > 0) {
+            RuntimeBus.append(
+                "device refused symlink creation ${bundleReport.symlinkFailures}x " +
+                    "(first: ${bundleReport.firstError}) — linker-critical libs ship as " +
+                    "hard links, agent path unaffected; some helper utilities may be absent"
+            )
+        }
+        if (bundleReport.hardlinkCopies > 0) {
+            RuntimeBus.append(
+                "device also refused hard links ${bundleReport.hardlinkCopies}x — " +
+                    "budget-capped copies used (${bundleReport.fallbackBytes / (1 shl 20)}MB)"
+            )
+        }
         File(usr, "bin").listFiles()?.forEach { f ->
             if (f.isFile && !java.nio.file.Files.isSymbolicLink(f.toPath())) {
                 f.setExecutable(true, false)
@@ -169,6 +183,23 @@ object Provisioner {
         }
         if (!RuntimePaths.nodeBin(app).isFile || !RuntimePaths.bashBin(app).isFile) {
             throw IOException("bionic bundle layout unexpected (usr/bin/node or usr/bin/bash missing)")
+        }
+        // Fail fast + classify: every linker-critical soname must exist as a
+        // REAL file here (build-time audit wrote the exact list). A miss here
+        // is a device filesystem/SELinux limitation, NOT a Bionic verdict.
+        val critical = runCatching { readAssetText(app, "runtime/bionic/prefix.critical.txt") }.getOrNull()
+        if (critical != null) {
+            val missing = critical.lineSequence()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .filter { !File(usr, "lib/$it").isFile }
+                .toList()
+            if (missing.isNotEmpty()) {
+                throw IOException(
+                    "bionic runtime incomplete on device: missing usr/lib/${missing.take(5)} " +
+                        "— device blocked file/symlink creation (${bundleReport.firstError ?: "no extraction error"})"
+                )
+            }
         }
 
         // 2. Official ZCode distribution (embedded) -------------------------
@@ -241,7 +272,12 @@ object Provisioner {
         val out = proc.inputStream.bufferedReader().readText().trim()
         val code = proc.waitFor()
         if (code != 0) {
-            throw IOException("embedded node failed on this device (exit $code): ${out.take(300)}")
+            val detail = out.take(300)
+            val cls = if (out.contains("CANNOT LINK")) {
+                " [classification: embedded runtime file missing on device — " +
+                    "bionic linker could not resolve a bundled library]"
+            } else ""
+            throw IOException("embedded node failed on this device (exit $code): $detail$cls")
         }
         return out.take(200)
     }
@@ -359,7 +395,30 @@ object Provisioner {
 
     // -------------------------------------------------------------- archives
 
-    private fun extractTar(raw: java.io.InputStream, dest: File) {
+    /**
+     * Diagnosability for device-side symlink/hardlink limits (Vivo V2035,
+     * 2026-10-27: EVERY Files.createSymbolicLink failed, the old code logged
+     * only "symlink skipped" and swallowed the exception -> the failure
+     * surfaced later as a confusing bionic linker error).
+     */
+    private class ExtractReport {
+        var symlinkFailures = 0
+        var hardlinkCopies = 0
+        var hardlinkCopySkipped = 0
+        var fallbackBytes = 0L
+        var firstError: String? = null
+    }
+
+    /** Worst-case on-device copy fallback when a device refuses link() too. */
+    private companion object {
+        const val HARDLINK_COPY_BUDGET_BYTES: Long = 200L * 1024 * 1024
+    }
+
+    private fun extractTar(
+        raw: java.io.InputStream,
+        dest: File,
+        report: ExtractReport = ExtractReport(),
+    ) {
         TarArchiveInputStream(raw.buffered(1 shl 16)).use { tis ->
             val destCanon = dest.canonicalPath + File.separator
             while (true) {
@@ -375,15 +434,51 @@ object Provisioner {
                         if (target.exists()) target.delete()
                         runCatching {
                             Files.createSymbolicLink(target.toPath(), Path.of(entry.linkName))
-                        }.onFailure {
-                            RuntimeBus.append("symlink skipped: ${entry.name} -> ${entry.linkName}")
+                        }.onFailure { e ->
+                            report.symlinkFailures++
+                            if (report.firstError == null) {
+                                report.firstError = "${e.javaClass.simpleName}: ${e.message}"
+                            }
+                            if (report.symlinkFailures <= 3) {
+                                RuntimeBus.append(
+                                    "symlink FAILED: ${entry.name} -> ${entry.linkName} " +
+                                        "(${e.javaClass.simpleName}: ${e.message})"
+                                )
+                            }
                         }
                     }
                     entry.isLink -> {
                         target.parentFile?.mkdirs()
                         val linkTarget = File(dest, entry.linkName)
                         runCatching { Files.createLink(target.toPath(), linkTarget.toPath()) }
-                            .onFailure { linkTarget.copyTo(target, overwrite = true) }
+                            .onFailure { e ->
+                                if (linkTarget.isFile &&
+                                    report.fallbackBytes + linkTarget.length() <= HARDLINK_COPY_BUDGET_BYTES
+                                ) {
+                                    runCatching { linkTarget.copyTo(target, overwrite = true) }
+                                        .onSuccess {
+                                            report.hardlinkCopies++
+                                            report.fallbackBytes += linkTarget.length()
+                                            if (report.hardlinkCopies <= 3) {
+                                                RuntimeBus.append(
+                                                    "hardlink fallback copy: ${entry.name} " +
+                                                        "(${linkTarget.length() / (1 shl 10)}KiB; ${e.javaClass.simpleName})"
+                                                )
+                                            }
+                                        }
+                                        .onFailure {
+                                            RuntimeBus.append("hardlink fallback FAILED: ${entry.name}: ${it.message}")
+                                        }
+                                } else {
+                                    report.hardlinkCopySkipped++
+                                    if (report.hardlinkCopySkipped <= 3) {
+                                        RuntimeBus.append(
+                                            "hardlink fallback SKIPPED (budget): ${entry.name} " +
+                                                "(${e.javaClass.simpleName})"
+                                        )
+                                    }
+                                }
+                            }
                     }
                     else -> {
                         target.parentFile?.mkdirs()
