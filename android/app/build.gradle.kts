@@ -20,8 +20,8 @@ android {
         // matching the Termux/proot-distro ecosystem. Revisit with a native
         // library-dir launch strategy if a higher targetSdk becomes required.
         targetSdk = 28
-        versionCode = 4
-        versionName = "0.3.1-e2"
+        versionCode = 5
+        versionName = "0.3.2-e2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["usesCleartextTraffic"] = "false"

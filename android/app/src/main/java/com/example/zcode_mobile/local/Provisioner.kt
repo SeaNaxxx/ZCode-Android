@@ -3,8 +3,6 @@ package com.example.zcode_mobile.local
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.apache.commons.compress.archivers.tar.TarArchiveEntry
-import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 import java.io.File
@@ -13,8 +11,6 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
-import java.nio.file.Files
-import java.nio.file.Path
 import java.security.MessageDigest
 
 /**
@@ -39,9 +35,6 @@ import java.security.MessageDigest
  * No credentials are handled here. Every failure is reported with its stage.
  */
 object Provisioner {
-
-    /** Worst-case on-device copy fallback when a device refuses link() too. */
-    private val HARDLINK_COPY_BUDGET_BYTES: Long = 200L * 1024 * 1024
 
     private const val NODE_SHASUMS = "https://nodejs.org/dist/v${RuntimePaths.NODE_VERSION}/SHASUMS256.txt"
     private const val UBUNTU_SHA_URL =
@@ -73,7 +66,7 @@ object Provisioner {
             val expectedRootfs = fetchExpectedSha(UBUNTU_SHA_URL, rootfsTar.name)
             verifySha256(rootfsTar, expectedRootfs, "ubuntu-base")
             RuntimeBus.setState(RuntimeState.Provisioning("extracting Ubuntu rootfs", 25))
-            extractTar(rootfsTar.inputStream().let { GzipCompressorInputStream(it) }, root)
+            TarExtractor(root).extract(rootfsTar.inputStream().let { GzipCompressorInputStream(it) })
 
             // 2. Node.js ------------------------------------------------------
             val nodeTarName = "node-v${RuntimePaths.NODE_VERSION}-linux-arm64.tar.xz"
@@ -85,7 +78,7 @@ object Provisioner {
             RuntimeBus.setState(RuntimeState.Provisioning("extracting Node.js", 55))
             val opt = File(root, "opt").apply { mkdirs() }
             val nodeTmp = File(opt, "_node_tmp").apply { mkdirs() }
-            extractTar(nodeTar.inputStream().let { XZCompressorInputStream(it) }, nodeTmp)
+            TarExtractor(nodeTmp).extract(nodeTar.inputStream().let { XZCompressorInputStream(it) })
             val extractedNode = File(nodeTmp, "node-v${RuntimePaths.NODE_VERSION}-linux-arm64")
             if (!File(extractedNode, "bin/node").isFile) {
                 throw IOException("node tarball layout unexpected (bin/node missing)")
@@ -105,7 +98,7 @@ object Provisioner {
             copyAsset(app, "runtime/zcode-dist.tgz", distTar)
             verifySha256(distTar, distSha, "zcode-dist")
             RuntimeBus.setState(RuntimeState.Provisioning("extracting ZCode distribution", 72))
-            extractTar(distTar.inputStream().let { GzipCompressorInputStream(it) }, opt)
+            TarExtractor(opt).extract(distTar.inputStream().let { GzipCompressorInputStream(it) })
             if (!File(root, "opt/zcode/bin/zcode.mjs").isFile) {
                 throw IOException("zcode dist layout unexpected (opt/zcode/bin/zcode.mjs missing)")
             }
@@ -163,24 +156,46 @@ object Provisioner {
         copyAsset(app, "runtime/bionic/prefix.tgz", bundleTar)
         verifySha256(bundleTar, bundleSha, "bionic-prefix")
         RuntimeBus.setState(RuntimeState.Provisioning("extracting Bionic runtime (node/git/bash)", 25))
-        // tar root is usr/ -> lands at <runtime>/usr
-        val bundleReport = ExtractReport()
-        extractTar(bundleTar.inputStream().let { GzipCompressorInputStream(it) }, rt, bundleReport)
-        if (bundleReport.symlinkFailures > 0) {
+        // tar root is usr/ -> lands at <runtime>/usr. The extractor ships
+        // linker-critical sonames as real files and needs NO hard-link support
+        // from the device (failure-1/2 lessons); its fallback chain is
+        // symlink -> hardlink -> budgeted copy, with app-API bugs failing
+        // loudly instead of masquerading as device refusals.
+        val report = TarExtractor.ExtractReport()
+        TarExtractor(rt, report).extract(bundleTar.inputStream().let { GzipCompressorInputStream(it) })
+        RuntimeBus.append(
+            "bundle extraction: ${report.regularFiles} files, " +
+                "${report.symlinksCreated} symlinks created, " +
+                "${report.symlinkFsFailures} symlink refusals, " +
+                "${report.hardlinkEntries} tar hardlink entries"
+        )
+        if (report.symlinkFsFailures > 0) {
             RuntimeBus.append(
-                "device refused symlink creation ${bundleReport.symlinkFailures}x " +
-                    "(first: ${bundleReport.firstError}) — linker-critical libs ship as " +
-                    "hard links, agent path unaffected; some helper utilities may be absent"
+                "device refused symlink creation ${report.symlinkFsFailures}x " +
+                    "(first: ${report.firstError}) — fallback chain used " +
+                    "(hardlink ${report.symlinkFallbackHardlinks}x, copy ${report.symlinkFallbackCopies}x, " +
+                    "skipped ${report.hardlinkCopySkipped}x); linker-critical sonames are REAL " +
+                    "files in the bundle and are unaffected"
             )
         }
-        if (bundleReport.hardlinkCopies > 0) {
+        if (report.hardlinkEntries > 0) {
+            // Builder guarantee (audit): the delivered tar must contain ZERO
+            // hardlink entries — devices refuse link(). Seeing this > 0 means
+            // the builder audit regressed, not that the device is broken.
             RuntimeBus.append(
-                "device also refused hard links ${bundleReport.hardlinkCopies}x — " +
-                    "budget-capped copies used (${bundleReport.fallbackBytes / (1 shl 20)}MB)"
+                "WARNING: tar contained ${report.hardlinkEntries} hardlink entries " +
+                    "(created ${report.hardlinkCreated}, copied ${report.hardlinkCopies}, " +
+                    "skipped ${report.hardlinkCopySkipped}) — builder hardlink audit regressed"
+            )
+        }
+        if (report.fallbackBytes > 0) {
+            RuntimeBus.append(
+                "copy fallback used for ${report.fallbackBytes / (1 shl 20)}MB " +
+                    "(budget ${TarExtractor.DEFAULT_COPY_BUDGET_BYTES / (1 shl 20)}MB)"
             )
         }
         File(usr, "bin").listFiles()?.forEach { f ->
-            if (f.isFile && !java.nio.file.Files.isSymbolicLink(f.toPath())) {
+            if (f.isFile && !TarExtractor.DefaultLinkOps.isSymbolicLink(f)) {
                 f.setExecutable(true, false)
             }
         }
@@ -188,8 +203,9 @@ object Provisioner {
             throw IOException("bionic bundle layout unexpected (usr/bin/node or usr/bin/bash missing)")
         }
         // Fail fast + classify: every linker-critical soname must exist as a
-        // REAL file here (build-time audit wrote the exact list). A miss here
-        // is a device filesystem/SELinux limitation, NOT a Bionic verdict.
+        // REAL file here (build-time audit materialized them; they never
+        // depend on device symlink/hardlink support). A miss here is an
+        // extraction/filesystem failure, NOT a Bionic verdict.
         val critical = runCatching { readAssetText(app, "runtime/bionic/prefix.critical.txt") }.getOrNull()
         if (critical != null) {
             val missing = critical.lineSequence()
@@ -200,10 +216,25 @@ object Provisioner {
             if (missing.isNotEmpty()) {
                 throw IOException(
                     "bionic runtime incomplete on device: missing usr/lib/${missing.take(5)} " +
-                        "— device blocked file/symlink creation (${bundleReport.firstError ?: "no extraction error"})"
+                        "— extraction fallback exhausted (${report.firstError ?: "no extraction error"})"
                 )
             }
         }
+        // OpenSSL runtime wiring: the Termux-built libcrypto has its
+        // OPENSSLDIR compiled in (/data/data/com.termux/...) which is EACCES
+        // for this app and FATAL at node startup (device failure 2, exit 13).
+        // The env fix alone is not enough — prove the config file is present
+        // and readable INSIDE the runtime, materializing the fallback if not.
+        val cnf = BionicEnv.ensureOpenSslConfig(usr)
+        if (!cnf.isFile || !cnf.canRead()) {
+            throw IOException("openssl.cnf missing and fallback could not be written at ${cnf.absolutePath}")
+        }
+        RuntimeBus.append(
+            "openssl config: ${cnf.absolutePath} " +
+                (if (cnf.length() == BionicEnv.FALLBACK_OPENSSL_CNF.length.toLong()) "(fallback)" else "(bundled)") +
+                ", cert.pem=" + File(usr, BionicEnv.CERT_PEM_REL).isFile +
+                ", ossl-modules=" + File(usr, BionicEnv.OSSL_MODULES_REL).isDirectory
+        )
 
         // 2. Official ZCode distribution (embedded) -------------------------
         RuntimeBus.setState(RuntimeState.Provisioning("staging official ZCode distribution", 45))
@@ -214,7 +245,7 @@ object Provisioner {
         RuntimeBus.setState(RuntimeState.Provisioning("extracting ZCode distribution", 55))
         dist.mkdirs()
         // tar root is zcode/ -> lands at <runtime>/dist/zcode
-        extractTar(distTar.inputStream().let { GzipCompressorInputStream(it) }, dist)
+        TarExtractor(dist).extract(distTar.inputStream().let { GzipCompressorInputStream(it) })
         if (!RuntimePaths.distAgentEntry(app).isFile || !RuntimePaths.distWebEntry(app).isFile) {
             throw IOException("zcode dist layout unexpected (agent/zcode.cjs or bin/zcode.mjs missing)")
         }
@@ -276,10 +307,19 @@ object Provisioner {
         val code = proc.waitFor()
         if (code != 0) {
             val detail = out.take(300)
-            val cls = if (out.contains("CANNOT LINK")) {
-                " [classification: embedded runtime file missing on device — " +
-                    "bionic linker could not resolve a bundled library]"
-            } else ""
+            val cls = when {
+                out.contains("CANNOT LINK") ->
+                    " [classification: embedded runtime file missing on device — " +
+                        "bionic linker could not resolve a bundled library]"
+                out.contains("OpenSSL configuration error") ->
+                    " [classification: app-side env defect — OpenSSL init failed; " +
+                        "check OPENSSL_CONF/OPENSSL_MODULES point inside the app runtime, " +
+                        "NOT a Bionic incompatibility]"
+                out.contains("com.termux") ->
+                    " [classification: app-side env defect — runtime leaked a Termux path; " +
+                        "NOT a Bionic incompatibility]"
+                else -> ""
+            }
             throw IOException("embedded node failed on this device (exit $code): $detail$cls")
         }
         return out.take(200)
@@ -287,29 +327,17 @@ object Provisioner {
 
     /**
      * Environment for every Bionic process (provision probe, mock provider,
-     * web server, agent children). Mirrors the proven E0/E1 wrapper
-     * (emu-run.sh) adapted to the app-owned non-canonical prefix.
+     * web server, agent children). Delegates to the pure-JVM, unit-tested
+     * [BionicEnv] contract.
      */
     internal fun applyBionicEnv(env: MutableMap<String, String>, app: Context) {
-        val usr = RuntimePaths.usrDir(app)
-        val home = RuntimePaths.homeDir(app)
-        env["PREFIX"] = usr.absolutePath
-        env["HOME"] = home.absolutePath
-        env["TMPDIR"] = File(home, "tmp").absolutePath
-        env["PATH"] = "${usr.absolutePath}/bin:/system/bin:/system/xbin"
-        env["LD_LIBRARY_PATH"] = "${usr.absolutePath}/lib"
-        env["SHELL"] = RuntimePaths.bashBin(app).absolutePath
-        env["LANG"] = "C.UTF-8"
-        env["NODE_OPTIONS"] = ""
-        env["PAGER"] = "cat"
-        env["GIT_PAGER"] = "cat"
-        env["GIT_EXEC_PATH"] = "${usr.absolutePath}/libexec/git-core"
-        env["GIT_CONFIG_NOSYSTEM"] = "1"
-        val cert = File(usr, "etc/tls/cert.pem")
-        if (cert.isFile) {
-            env["SSL_CERT_FILE"] = cert.absolutePath
-        }
-        env["ZCODE_DATA_BASE_DIR"] = RuntimePaths.dataDir(app).absolutePath
+        BionicEnv.apply(
+            env,
+            usr = RuntimePaths.usrDir(app),
+            home = RuntimePaths.homeDir(app),
+            dataDir = RuntimePaths.dataDir(app),
+            bashBin = RuntimePaths.bashBin(app),
+        )
     }
 
     // ------------------------------------------------------------------ HTTP
@@ -397,104 +425,11 @@ object Provisioner {
     }
 
     // -------------------------------------------------------------- archives
-
-    /**
-     * Diagnosability for device-side symlink/hardlink limits (Vivo V2035,
-     * 2026-10-27: EVERY Files.createSymbolicLink failed, the old code logged
-     * only "symlink skipped" and swallowed the exception -> the failure
-     * surfaced later as a confusing bionic linker error).
-     */
-    private class ExtractReport {
-        var symlinkFailures = 0
-        var hardlinkCopies = 0
-        var hardlinkCopySkipped = 0
-        var fallbackBytes = 0L
-        var firstError: String? = null
-    }
-
-    private fun extractTar(
-        raw: java.io.InputStream,
-        dest: File,
-        report: ExtractReport = ExtractReport(),
-    ) {
-        TarArchiveInputStream(raw.buffered(1 shl 16)).use { tis ->
-            val destCanon = dest.canonicalPath + File.separator
-            while (true) {
-                val entry: TarArchiveEntry = tis.nextTarEntry ?: break
-                val target = File(dest, entry.name)
-                if (!target.canonicalPath.startsWith(destCanon) && target.canonicalPath != dest.canonicalPath) {
-                    throw IOException("archive entry escapes destination: ${entry.name}")
-                }
-                when {
-                    entry.isDirectory -> target.mkdirs()
-                    entry.isSymbolicLink -> {
-                        target.parentFile?.mkdirs()
-                        if (target.exists()) target.delete()
-                        runCatching {
-                            Files.createSymbolicLink(target.toPath(), Path.of(entry.linkName))
-                        }.onFailure { e ->
-                            report.symlinkFailures++
-                            if (report.firstError == null) {
-                                report.firstError = "${e.javaClass.simpleName}: ${e.message}"
-                            }
-                            if (report.symlinkFailures <= 3) {
-                                RuntimeBus.append(
-                                    "symlink FAILED: ${entry.name} -> ${entry.linkName} " +
-                                        "(${e.javaClass.simpleName}: ${e.message})"
-                                )
-                            }
-                        }
-                    }
-                    entry.isLink -> {
-                        target.parentFile?.mkdirs()
-                        val linkTarget = File(dest, entry.linkName)
-                        runCatching { Files.createLink(target.toPath(), linkTarget.toPath()) }
-                            .onFailure { e ->
-                                if (linkTarget.isFile &&
-                                    report.fallbackBytes + linkTarget.length() <= HARDLINK_COPY_BUDGET_BYTES
-                                ) {
-                                    runCatching { linkTarget.copyTo(target, overwrite = true) }
-                                        .onSuccess {
-                                            report.hardlinkCopies++
-                                            report.fallbackBytes += linkTarget.length()
-                                            if (report.hardlinkCopies <= 3) {
-                                                RuntimeBus.append(
-                                                    "hardlink fallback copy: ${entry.name} " +
-                                                        "(${linkTarget.length() / (1 shl 10)}KiB; ${e.javaClass.simpleName})"
-                                                )
-                                            }
-                                        }
-                                        .onFailure {
-                                            RuntimeBus.append("hardlink fallback FAILED: ${entry.name}: ${it.message}")
-                                        }
-                                } else {
-                                    report.hardlinkCopySkipped++
-                                    if (report.hardlinkCopySkipped <= 3) {
-                                        RuntimeBus.append(
-                                            "hardlink fallback SKIPPED (budget): ${entry.name} " +
-                                                "(${e.javaClass.simpleName})"
-                                        )
-                                    }
-                                }
-                            }
-                    }
-                    else -> {
-                        target.parentFile?.mkdirs()
-                        FileOutputStream(target).use { tis.copyTo(it) }
-                        applyMode(target, entry.mode)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun applyMode(f: File, mode: Int) {
-        val user = (mode shr 6) and 7
-        f.setReadable(true)
-        if (user and 4 != 0) f.setReadable(true, false) else f.setReadable(true, true)
-        if (user and 2 != 0) f.setWritable(true)
-        if (user and 1 != 0) f.setExecutable(true, false)
-    }
+    // Tar extraction lives in TarExtractor.kt (pure JVM, unit-tested, with an
+    // injectable LinkOps layer). The legacy in-class extractor was removed
+    // after device failure 2: it used java.nio.file.Path.of(...) — absent
+    // before Android 14 — and swallowed the resulting NoSuchMethodError as a
+    // "device refusal", masking the real defect for two device builds.
 
     // --------------------------------------------------------------- assets
 
