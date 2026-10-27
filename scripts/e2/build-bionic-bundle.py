@@ -4,30 +4,40 @@
 REUSE of the proven experiment/bionic-e0-e1 machinery (termux-rootfs.py,
 13/13 PASS run 40263559737), adapted for APK embedding.
 
-DEVICE FAILURE 1 FIX (Vivo V2035, 2026-10-27 diagnostics):
+DEVICE FAILURE 1 (Vivo V2035, 2026-10-27, fixed in 0.3.1-e2):
   `CANNOT LINK EXECUTABLE .../usr/bin/node: library "libz.so.1" not found`
-  Root cause chain (all evidence-backed):
-    1. Termux ships linker-critical sonames as SYMLINKS (libz.so.1 ->
-       libz.so.1.3.2; same for icu/sqlite/readline/ncurses/lzma/bz2/expat).
-    2. The bundle closure included them, but the static audit matched NEEDED
-       names against directory ENTRIES — a symlink name passed the audit.
-    3. On the x86_64 AVD the app's tar extractor created symlinks fine (node
-       probe v24.22.1). On the real Vivo device EVERY Files.createSymbolicLink
-       failed ("symlink skipped" x150+ in the device log) — OEM/SELinux/filesystem
-       behavior we cannot reproduce here — so every soname symlink was absent.
-  Fix: HARD-LINK MATERIALIZATION. Every file-symlink in the staged prefix is
-  replaced by a real hard link to its target before tarring:
-    - tar stores hardlink entries with NO payload -> no APK size cost;
-    - on-device, hard links (Files.createLink) extract as REAL FILES; the app
-      falls back to a budget-capped copy if a device refuses link() too;
-    - the audit now requires every NEEDED soname to resolve to a REAL FILE
-      (not a symlink) in usr/lib, both in the stage AND in the re-extracted
-      tarball (catches tar-level emission problems);
-    - the builder emits prefix-critical.txt (the exact real-file sonames the
-      linker needs) so the app can fail fast on-device if any is missing.
+  Termux ships linker-critical sonames as SYMLINKS (libz.so.1 ->
+  libz.so.1.3.2; same for sqlite/readline/lzma/bz2/expat). The old audit
+  matched NEEDED names against directory ENTRIES, so a symlink name passed.
 
-  Every .deb is SHA256-verified against the index stanza before extraction
-  (dpkg-deb -x, which understands data.tar.zst).
+DEVICE FAILURE 2 (Vivo V2035, Android 13, 2026-10-28) — REDESIGN trigger:
+  1. The 0.3.1 "fix" shipped sonames as tar HARDLINK entries and assumed the
+     device refused symlink creation. The 0.3.1 device log PROVED otherwise:
+     every symlink failure was NoSuchMethodError on java.nio.file.Path.of —
+     an APP bug (Path.of needs API 34, device is API 33). Device symlink
+     support was never actually tested; app-side fix (Paths.get) is in the
+     Android code now.
+  2. The device DOES refuse Files.createLink (AccessDeniedException x135),
+     so tar hardlink entries forced ~199MB of budget-capped copies and left
+     helper utilities absent. Lesson: the DELIVERED ARCHIVE must never make
+     the device call link().
+
+THIS BUILDER'S GUARANTEES (all verified against the DELIVERED tarball):
+  G1. Every linker-critical soname (DT_NEEDED of every staged ELF) is a REAL
+      FILE in usr/lib — materialized as a byte copy of its target before
+      tarring. Linker closure is independent of device symlink support.
+  G2. The delivered tar contains ZERO hardlink entries: deb-materialized
+      duplicate files (git-core helpers, ...) are converted to RELATIVE
+      symlinks; the audit fails the build otherwise (tar-level check).
+  G3. usr/etc/tls/openssl.cnf and usr/etc/tls/cert.pem are present: the
+      Termux-built libcrypto has OPENSSLDIR compiled in as
+      /data/data/com.termux/files/usr/etc/tls (proven via strings on
+      libcrypto.so.3), which is unreadable for the app and FATAL at node
+      startup (OpenSSL configuration error, exit 13). The app points
+      OPENSSL_CONF/SSL_CERT_FILE at these runtime copies.
+  G4. Every .deb is SHA256-verified against the index stanza before
+      extraction (dpkg-deb -x).
+
   Output tar root is `usr/` (Termux prefix layout). The app extracts it
   under <filesDir>/runtime/ so the prefix becomes
   /data/data/com.example.zcode_mobile/files/runtime/usr.
@@ -146,54 +156,111 @@ def rewrite_symlinks(root):
     return rewritten, other_abs
 
 
-def materialize_symlinks(usr):
-    """Replace every file-symlink in the prefix with a REAL hard link.
+def hardlinks_to_symlinks(usr):
+    """G2: convert duplicate (same-inode) real files to RELATIVE symlinks.
 
-    Device failure 1 fix: on the Vivo V2035 the app could not create a single
-    symlink, so every soname that existed only as a symlink was missing for
-    the bionic linker. Hard links are regular files (same inode) — the linker
-    resolution never differs, tar stores them without payload, and the app's
-    extractor has a budget-capped copy fallback for devices that refuse
-    link() as well.
-
-    Kept as symlinks (and recorded): links that resolve to DIRECTORIES inside
-    the prefix (none of them are linker-visible) and dangling/outside links.
+    dpkg-deb -x materializes package hard links (git-core helpers -> bin/git,
+    busybox-style sets) as same-inode real files; GNU tar would store them as
+    hardlink entries, which the Vivo V2035 refuses to create (EACCES x135,
+    2026-10-28) and which cost ~199MB of budget-capped copies. Symlink
+    entries carry no payload, and the app creates them with an API available
+    on Android 13 (Paths.get — the app-side Path.of bug is fixed separately).
+    The canonical member of each inode group is the first in sorted order.
     """
-    materialized = 0
-    kept_dir_links = []
-    kept_dangling = []
+    groups = {}
     for dirpath, dirnames, filenames in os.walk(usr):
         dirnames.sort()
         for fn in sorted(filenames):
             p = pathlib.Path(dirpath) / fn
-            if not p.is_symlink():
+            if p.is_symlink() or not p.is_file():
                 continue
-            target = os.readlink(p)
-            tgt = (p.parent / target) if not target.startswith("/") else pathlib.Path(target)
-            try:
-                inside = tgt.resolve().is_relative_to(usr.resolve())
-            except OSError:
-                inside = False
-            if tgt.is_file() and not tgt.is_symlink() and inside:
-                # hard link to the real file (fallback to copy if link denied)
-                try:
-                    tmp = p.with_name(p.name + ".mat-tmp")
-                    tmp.unlink(missing_ok=True)
-                    os.link(tgt, tmp)
-                    p.unlink()
-                    tmp.rename(p)
-                    materialized += 1
-                except OSError as e:
-                    p.unlink()
-                    shutil.copyfile(tgt, p)
-                    shutil.copymode(tgt, p)
-                    materialized += 1
-                    print(f"[bundle] materialize: link() denied for {p} ({e}), copied")
-            elif tgt.is_dir():
-                kept_dir_links.append(f"{p.relative_to(usr)} -> {target}")
-            else:
-                kept_dangling.append(f"{p.relative_to(usr)} -> {target}")
-    return materialized, kept_dir_links, kept_dangling
+            st = p.stat()
+            groups.setdefault((st.st_dev, st.st_ino), []).append(p)
+    converted = 0
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        canonical = members[0]
+        for dup in members[1:]:
+            rel = os.path.relpath(canonical, dup.parent)
+            dup.unlink()
+            os.symlink(rel, dup)
+            converted += 1
+    return converted
+
+
+def needed_sonames(stage):
+    """All DT_NEEDED names across the staged ELFs (pre-materialization scan)."""
+    needed = set()
+    for sub in ("usr/bin", "usr/libexec/git-core", "usr/lib"):
+        d = stage / sub
+        if not d.is_dir():
+            continue
+        for p in sorted(d.iterdir()):
+            if not p.is_file() or p.is_symlink():
+                continue
+            n, _soname = elf_needed(p)
+            if n:
+                needed.update(n)
+    return needed
+
+
+def materialize_sonames(stage, needed):
+    """G1: replace soname symlinks in usr/lib with REAL byte copies.
+
+    Devices that refuse symlink() must still get a complete linker closure,
+    so every symlink in usr/lib whose NAME appears as a DT_NEEDED of any
+    staged ELF becomes a real file (copy of its resolved target). This is
+    the durable form of the failure-1 fix: real payload in the tar, no
+    link()/symlink() syscall required for the linker path.
+    """
+    lib_dir = stage / "usr/lib"
+    materialized = []
+    if not lib_dir.is_dir():
+        return materialized
+    for p in sorted(lib_dir.iterdir()):
+        if not p.is_symlink() or p.name not in needed:
+            continue
+        target = p.resolve()
+        if not target.is_file():
+            continue  # dangling: leave for the audit to flag
+        tmp = p.with_name(p.name + ".mat-tmp")
+        tmp.unlink(missing_ok=True)
+        shutil.copyfile(target, tmp)
+        shutil.copymode(target, tmp)
+        p.unlink()
+        tmp.rename(p)
+        materialized.append(p.name)
+    return materialized
+
+
+def openssl_gate(stage):
+    """G3: openssl.cnf + cert.pem must ship inside the bundle.
+
+    libcrypto's compiled-in OPENSSLDIR (/data/data/com.termux/...) is fatal
+    for the app; the app points OPENSSL_CONF/SSL_CERT_FILE at the runtime
+    copies of exactly these files. Missing either = build failure.
+    """
+    problems = []
+    cnf = stage / "usr/etc/tls/openssl.cnf"
+    cert = stage / "usr/etc/tls/cert.pem"
+    if not cnf.is_file():
+        problems.append(
+            "usr/etc/tls/openssl.cnf missing — node startup is FATAL without it "
+            "(libcrypto OPENSSLDIR points at an unreadable Termux path); "
+            "seed the openssl package")
+    if not cert.is_file():
+        problems.append(
+            "usr/etc/tls/cert.pem missing — SSL_CERT_FILE/CA verification needs "
+            "a bundled store; seed ca-certificates")
+    modules = stage / "usr/lib/ossl-modules"
+    info = {
+        "opensslConf": cnf.is_file(),
+        "certPem": cert.is_file(),
+        "osslModulesDir": modules.is_dir(),
+        "osslModules": sorted(p.name for p in modules.iterdir()) if modules.is_dir() else [],
+    }
+    return problems, info
 
 
 def elf_needed(path):
@@ -281,12 +348,15 @@ def audit(stage):
 
 
 def verify_tarball(tgz, stage, needed_real, arch, workdir):
-    """Extract the built tarball and re-run the symlink-strict audit.
+    """Extract the built tarball and verify the DELIVERED archive.
 
-    Proves the DELIVERED archive (including its hardlink entries) yields real
-    files for every linker-critical soname — independent of how the stage dir
-    looked before tarring.
+    Checks (failure-1/2 evidence, tar-level):
+      a. symlink-strict dependency audit on the re-extracted tree;
+      b. ZERO hardlink entries in the tar (device refuses link(); G2);
+      c. every linker-critical soname is a REGULAR member (real payload, G1);
+      d. openssl.cnf + cert.pem are members (G3).
     """
+    import tarfile
     vdir = pathlib.Path(workdir) / f"verify-{arch}"
     if vdir.exists():
         shutil.rmtree(vdir)
@@ -294,18 +364,46 @@ def verify_tarball(tgz, stage, needed_real, arch, workdir):
     subprocess.run(["tar", "-xzf", str(tgz), "-C", str(vdir)], check=True)
     problems, stats, needed_real2 = audit(vdir)
     problems2, stats2, _ = audit(stage)
+    hardlink_members = []
+    member_names = set()
+    real_members = set()
+    with tarfile.open(tgz, "r:gz") as tf:
+        for m in tf:
+            member_names.add(m.name)
+            if m.islnk():
+                hardlink_members.append(m.name)
+            elif m.isfile():
+                real_members.add(m.name)
+    if hardlink_members:
+        problems.append(
+            f"tar contains {len(hardlink_members)} HARDLINK entries (device refuses "
+            f"link(), EACCES x135 on Vivo V2035): {hardlink_members[:6]}")
+    missing_real = [n for n in needed_real2 if f"usr/lib/{n}" not in real_members]
+    if missing_real:
+        problems.append(
+            f"linker-critical sonames not REGULAR members in tar: {missing_real[:10]}")
+    for req in ("usr/etc/tls/openssl.cnf", "usr/etc/tls/cert.pem"):
+        if req not in member_names:
+            problems.append(f"tar missing required member {req} (G3)")
     shutil.rmtree(vdir)
     merged = [f"[tar-verify] {p}" for p in problems] + \
              [f"[stage] {p}" for p in problems2]
     stats2["tar_verified"] = not problems
+    stats2["tar_hardlink_entries"] = len(hardlink_members)
     stats2["tar_needed_real_files"] = len(needed_real2)
     return merged, stats2
 
 
 def baked_prefix_scan(stage):
-    """Count hardcoded Termux-prefix strings in key binaries (informational)."""
+    """Count hardcoded Termux-prefix strings in key binaries (informational).
+
+    libcrypto.so.3/libssl.so.3 are included since failure 2: their compiled-in
+    OPENSSLDIR/MODULESDIR are the reason OPENSSL_CONF/OPENSSL_MODULES must be
+    set by the app at spawn time.
+    """
     result = {}
-    for rel in ("usr/bin/node", "usr/bin/git", "usr/bin/bash"):
+    for rel in ("usr/bin/node", "usr/bin/git", "usr/bin/bash",
+                "usr/lib/libcrypto.so.3", "usr/lib/libssl.so.3"):
         p = stage / rel
         if not p.is_file():
             continue
@@ -395,10 +493,21 @@ def main():
 
     rewritten, other_abs = rewrite_symlinks(stage / "usr")
 
-    # DEVICE FAILURE 1 FIX: hard-link materialization BEFORE auditing.
-    materialized, kept_dir_links, kept_dangling = materialize_symlinks(stage / "usr")
-    print(f"[bundle] materialized {materialized} file-symlinks into hard links; "
-          f"kept dir-links={len(kept_dir_links)}, dangling/outside={len(kept_dangling)}")
+    # DEVICE FAILURE 2 REDESIGN (evidence-ordered pipeline):
+    #   step A: duplicate same-inode real files -> relative symlinks, so the
+    #           delivered tar needs ZERO link() support on devices (G2);
+    #   step B: soname symlinks in usr/lib -> REAL byte copies, so the linker
+    #           closure needs ZERO symlink() support either (G1, failure-1).
+    usr = stage / "usr"
+    converted = hardlinks_to_symlinks(usr)
+    needed = needed_sonames(stage)
+    materialized = materialize_sonames(stage, needed)
+    print(f"[bundle] G2: {converted} duplicate hard-linked files -> relative symlinks")
+    print(f"[bundle] G1: {len(materialized)} linker-critical sonames -> real files "
+          f"(of {len(needed)} distinct DT_NEEDED names)")
+
+    # G3 gate: OpenSSL data files must ship (node startup is FATAL otherwise).
+    ossl_problems, ossl_info = openssl_gate(stage)
 
     node_bin = stage / "usr/bin/node"
     if not node_bin.is_file():
@@ -412,6 +521,7 @@ def main():
                     p.chmod(p.stat().st_mode | 0o111)
 
     problems, audit_stats, needed_real = audit(stage)
+    problems = problems + ossl_problems
     baked = baked_prefix_scan(stage)
     node_ver = chosen["nodejs-lts"].get("Version", "unknown")
     info = {
@@ -422,11 +532,9 @@ def main():
         "packages": manifest,
         "symlinksRewritten": rewritten,
         "otherAbsoluteSymlinks": other_abs[:20],
-        "symlinkMaterialization": {
-            "hardLinked": materialized,
-            "keptDirLinks": kept_dir_links[:20],
-            "keptDangling": kept_dangling[:30],
-        },
+        "hardlinksConvertedToSymlinks": converted,
+        "sonamesMaterializedAsRealFiles": materialized,
+        "openssl": ossl_info,
         "audit": audit_stats,
         "auditProblems": problems,
         "bakedTermuxPrefixStrings": baked,
@@ -434,9 +542,16 @@ def main():
         "builtAt": datetime.now(timezone.utc).isoformat(),
         "note": (
             "Termux Bionic userspace closure for embedding in the APK. "
-            "Linker-critical sonames are shipped as REAL hard links (Vivo V2035 "
-            "symlink-creation failure, 2026-10-27). Audit allowlist of Android "
-            "system libs: " + ", ".join(sorted(SYSTEM_LIBS))
+            "G1: linker-critical sonames ship as REAL FILES (linker closure "
+            "independent of device symlink support; Vivo failure 1). "
+            "G2: delivered tar contains ZERO hardlink entries — duplicates are "
+            "relative symlinks (Vivo refuses link(), failure 2). "
+            "G3: usr/etc/tls/openssl.cnf + cert.pem ship in the bundle; the app "
+            "sets OPENSSL_CONF/OPENSSL_MODULES/SSL_CERT_FILE to the runtime "
+            "copies because the Termux-built libcrypto has OPENSSLDIR compiled "
+            "in as /data/data/com.termux/... (fatal EACCES at node startup, "
+            "failure 2). Audit allowlist of Android system libs: " +
+            ", ".join(sorted(SYSTEM_LIBS))
         ),
     }
     if problems:
