@@ -146,3 +146,17 @@ Local validation (no Android SDK locally; CI compiles + reruns AVD):
 - Intermediate failure of build (run 40552242105) classified **app bug**:
   `companion object` not applicable inside a standalone object (Kotlin 2.2.10)
   — caught by standalone frontend compile, fixed in bcedf85.
+
+## Run 40569715105 (final, d1c1780) — FULL GREEN
+
+9/9 stages PASS on x86_64 AVD with the hard-link bundle: install / offline /
+setup-tap (offline provisioning) / node-probe (v24.22.1 android) / start-tap /
+e2-agent / e2-verify (disk effects) / persistence (marker unchanged, files
+intact, POST_NOTIFICATIONS pre-granted). Release `e2-rc2` refreshed with the
+final APKs (direct .apk downloads). Interim failures this session, all
+classified: build `companion object` in standalone object (app bug, bcedf85);
+release asset 422 already_exists (workflow/setup: shell var not exported to
+python — NAME passed as argv now); persistence quoting break on `Don't` +
+dialog covering Ready (workflow/setup: apostrophe-free `t allow` target +
+pre-grant). ARM64/Vivo/real-provider rows remain NOT TESTED — next evidence
+comes from the device retest on 0.3.1-e2.
