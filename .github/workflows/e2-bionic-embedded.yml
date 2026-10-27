@@ -35,7 +35,12 @@ permissions:
 env:
   UPSTREAM_PIN: 3c5b227649371507ddc4eb46ac5133afe6db1cab
   PNPM_VERSION: "10.33.2"
-  SYSTEM_IMAGE: "system-images;android-34;google_apis;x86_64"
+  # API 33 DELIBERATELY MATCHES THE ACCEPTANCE DEVICE (Vivo V2035, Android 13).
+  # The 0.3.0/0.3.1 device failures happened on API 33 while CI ran an API 34
+  # emulator: java.nio.file.Path.of (API 34+) worked in CI and crashed on the
+  # device with NoSuchMethodError. CI must never again be MORE capable than
+  # the device in ways that mask app-API defects.
+  SYSTEM_IMAGE: "system-images;android-33;google_apis;x86_64"
   PKG: com.example.zcode_mobile
   RT: /data/data/com.example.zcode_mobile/files/runtime
   WS: /data/data/com.example.zcode_mobile/files/workspace
@@ -58,6 +63,19 @@ jobs:
             echo "upstream_pin=$UPSTREAM_PIN"
             echo "branch=${GITHUB_REF_NAME} commit=${GITHUB_SHA}"
           } | tee "$LOGS_DIR/build-context.txt"
+
+      - name: "Unit tests — failure-2 regression guards (env contract, extraction, API compat)"
+        run: |
+          # JVM-only tests; they encode the Vivo V2035 device evidence:
+          #  - BionicEnvTest: OPENSSL_CONF/SSL_CERT_FILE/OPENSSL_MODULES point
+          #    inside the app runtime, never at com.termux, TLS never weakened;
+          #  - TarExtractorTest: Vivo-like link refusals fall back to a
+          #    budgeted copy; NoSuchMethodError fails as APP DEFECT;
+          #  - ApiCompatSourceTest: no java.nio.file.Path.of (API 34+) anywhere.
+          ( cd android && chmod +x gradlew && ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace ) \
+            > "$LOGS_DIR/gradle-unit-tests.log" 2>&1 \
+            || { tail -n 250 "$LOGS_DIR/gradle-unit-tests.log"; exit 1; }
+          grep -E "BUILD (SUCCESSFUL|FAILED)" "$LOGS_DIR/gradle-unit-tests.log" | tail -1
 
       - name: Checkout upstream at pinned commit
         uses: actions/checkout@v4
@@ -385,6 +403,15 @@ jobs:
           export SHELL=\$PREFIX/bin/bash
           export LANG=C.UTF-8
           export SSL_CERT_FILE=\$PREFIX/etc/tls/cert.pem
+          # OpenSSL wiring mirrors the app's BionicEnv (device failure 2 fix):
+          # the Termux-built libcrypto has OPENSSLDIR compiled in as
+          # /data/data/com.termux/... which is EACCES for this app and FATAL
+          # at node startup. OPENSSL_CONF must ALWAYS point at a readable
+          # file INSIDE the runtime.
+          export OPENSSL_CONF=\$PREFIX/etc/tls/openssl.cnf
+          [ -f "\$OPENSSL_CONF" ] || { echo "FATAL: openssl.cnf missing at \$OPENSSL_CONF"; exit 13; }
+          [ -d "\$PREFIX/lib/ossl-modules" ] && export OPENSSL_MODULES=\$PREFIX/lib/ossl-modules
+          export GIT_SSL_CAINFO=\$SSL_CERT_FILE
           export GIT_EXEC_PATH=\$PREFIX/libexec/git-core
           export GIT_CONFIG_NOSYSTEM=1
           export PAGER=cat GIT_PAGER=cat
@@ -561,6 +588,25 @@ jobs:
             adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh bash --version | head -1
           '
 
+      - name: openssl-offline | OpenSSL init + verified TLS handshake, still offline
+        run: |
+          # Device failure 2 acceptance (owner, 2026-10-28): "OpenSSL
+          # initializes without accessing /data/data/com.termux/".
+          # Full TLS handshake with verification on loopback — ZERO network,
+          # so any success is download-free and Termux-free.
+          source /tmp/e2-stage-lib.sh
+          openssl req -x509 -newkey rsa:2048 -keyout /tmp/e2-tls-key.pem \
+            -out /tmp/e2-tls-cert.pem -days 2 -nodes -subj "/CN=localhost" \
+            > /dev/null 2>&1
+          adb push scripts/e2/assets/e2-tls-offline-probe.cjs /data/local/tmp/e2-tls-offline-probe.cjs > /dev/null
+          adb push /tmp/e2-tls-cert.pem /data/local/tmp/e2-tls-cert.pem > /dev/null
+          adb push /tmp/e2-tls-key.pem /data/local/tmp/e2-tls-key.pem > /dev/null
+          stage_run openssl-offline -- bash -c '
+            set -e
+            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node /data/local/tmp/e2-tls-offline-probe.cjs \
+              /data/local/tmp/e2-tls-cert.pem /data/local/tmp/e2-tls-key.pem
+          '
+
       - name: start-tap | drive "Start ZCode" (embedded web server + mock provider)
         run: |
           source /tmp/e2-stage-lib.sh
@@ -650,14 +696,38 @@ jobs:
             echo "PERSISTENCE OK: same marker, files intact, runtime reused (offline; no downloads possible)"
           '
 
+      - name: tls-https | real HTTPS request with certificate verification (network ON)
+        run: |
+          # Failure 2 acceptance (owner, 2026-10-28): "A real HTTPS request
+          # succeeds with certificate verification enabled". Network is
+          # re-enabled HERE, after all offline criteria are proven, so the
+          # offline guarantees above remain download-free.
+          source /tmp/e2-stage-lib.sh
+          adb push scripts/e2/assets/e2-tls-https-probe.cjs /data/local/tmp/e2-tls-https-probe.cjs > /dev/null
+          stage_run net-restore -- bash -c '
+            set -e
+            adb shell cmd connectivity airplane-mode disable
+            for i in $(seq 1 30); do
+              sleep 2
+              if adb shell ping -c 1 -W 2 8.8.8.8 > /dev/null 2>&1; then
+                echo "network restored after ~$((i*2))s"; exit 0
+              fi
+            done
+            echo "FATAL: network did not return after airplane-mode disable"; exit 1
+          '
+          stage_run tls-https -- bash -c '
+            set -e
+            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node /data/local/tmp/e2-tls-https-probe.cjs https://api.github.com/zen
+          '
+
       - name: report | classification summary (owner rules, no auto-PRoot)
         if: always()
         run: |
           python3 - "$RESULTS_DIR" <<'PY'
           import json, os, sys
           d = sys.argv[1]
-          stages = ["install", "offline", "setup-tap", "node-probe", "start-tap",
-                    "e2-agent", "e2-verify", "persistence", "emu-boot"]
+          stages = ["install", "offline", "setup-tap", "node-probe", "openssl-offline", "start-tap",
+                    "e2-agent", "e2-verify", "persistence", "net-restore", "tls-https", "emu-boot"]
           rows = []
           for s in stages:
               p = os.path.join(d, s + ".json")
@@ -668,10 +738,13 @@ jobs:
               "offline": "test precondition (must pass)",
               "setup-tap": "offline provisioning from embedded assets (criterion 1)",
               "node-probe": "embedded node/git/bash exec on Android userspace (criterion 2; ARM64 proof deferred to device)",
+              "openssl-offline": "OpenSSL init inside app runtime + verified TLS handshake, ZERO network (failure-2 acceptance; Termux-path leak = FAIL)",
               "start-tap": "official ZCode --web + embedded mock on-device",
               "e2-agent": "real agent loop end-to-end (mock model; auth/billing NOT exercised)",
               "e2-verify": "agent effects verified on disk (criterion 3 mechanics)",
               "persistence": "restart survival, no re-provision (criterion 5 mechanics)",
+              "net-restore": "test precondition for tls-https (not a device criterion)",
+              "tls-https": "real HTTPS with certificate verification enabled (failure-2 acceptance; x86_64 AVD app-level evidence only)",
               "emu-boot": "workflow/setup — fix the test, never a Bionic verdict",
           }
           print(json.dumps({"scope": "x86_64 AVD app-level only; ARM64/device NOT proven here",
