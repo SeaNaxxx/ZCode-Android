@@ -76,3 +76,53 @@ is the cosmetic git templates warning above.
 The device gate: install `zcode-e2-arm64-debug.apk` on the Vivo V2035 and
 execute `docs/experiments/E2-DEVICE-PROTOCOL.md` (T0–T5). ARM64, Funtouch,
 real-provider rows stay NOT TESTED until then.
+
+---
+
+## DEVICE FAILURE 1 (2026-10-27, Vivo V2035, arm64 0.3.0-e2) — root cause + fix
+
+Observed: `CANNOT LINK EXECUTABLE .../usr/bin/node: library "libz.so.1" not
+found: needed by main executable`, provisioning failed at the node-probe gate.
+The x86_64 AVD run of the SAME code was green — proof-power separation held.
+
+Evidence chain:
+1. Termux zlib 1.3.2 deb: `libz.so.1 -> libz.so.1.3.2` is a SYMLINK
+   (`dpkg-deb -c`); node's `readelf -d` NEEDs libz.so.1, libicui18n.so.78,
+   libicuuc.so.78, libsqlite3.so, libcrypto.so.3, libssl.so.3,
+   libc++_shared.so (+ libc/libm/libdl from the system).
+2. The closure DID include zlib (nodejs-lts Depends zlib) — the old audit
+   passed legitimately because it matched NEEDED names against directory
+   ENTRIES: a symlink NAME satisfied the check.
+3. Vivo device log: ~150+ consecutive `symlink skipped` = every
+   `Files.createSymbolicLink` failed on that device (real exception swallowed
+   by the old extractor). AVD verify log: zero such lines; marker
+   nodeProbe=v24.22.1 proves symlinks resolved there.
+
+Classification (owner's five): **Android permission/device filesystem
+limitation** (Vivo refuses app symlink creation; exact errno unknown until
+the fixed build reports it) + **app bug** (failures swallowed, bundle relied
+on symlinks for linker-critical files). NOT a Bionic/ARM64 incompatibility;
+no PRoot escalation triggered.
+
+Fix (commit a8c4985, branch e2/bionic-arm64-embedded):
+- Bundle builder: hard-link materialization of every file-symlink before
+  tarring (359 aarch64 / 361 x86_64; tar hardlink entries = zero payload;
+  bundle still 58 MiB). Audit now symlink-STRICT: every DT_NEEDED must
+  resolve to a REAL file in usr/lib or a bionic system allowlist entry
+  (libstdc++ removed — nothing NEEDs it). Negative test: the pre-fix bundle
+  is rejected with 11 symlink-class problems. Tarball re-extraction re-audit
+  added. `prefix-critical.txt` (36 sonames) embedded for the device gate.
+- App: extraction report logs the REAL exceptions (first 3 + totals);
+  hardlink fallback copy with 200MB budget; fail-fast critical-soname gate
+  ("bionic runtime incomplete on device: missing usr/lib/…") instead of a
+  late confusing linker error; node probe output classified when it contains
+  CANNOT LINK. versionCode 4 / 0.3.1-e2.
+- Workflow: APK artifacts split per-ABI (owner request — no combined zip) +
+  prerelease `e2-rc2` with direct .apk asset downloads.
+
+Local validation (no Android SDK locally; CI compiles + reruns AVD):
+- Symlink-denying device simulation: 36/36 critical sonames extracted as real
+  files, 501 ELFs, 0 unresolved NEEDED, 0 symlinks created.
+- Worst case (symlinks AND hardlinks refused): critical gate still passes
+  inside the 200MB copy budget; only non-critical git-core helper copies are
+  skipped (git builtins unaffected).
