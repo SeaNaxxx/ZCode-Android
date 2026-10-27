@@ -220,17 +220,30 @@ jobs:
           echo "release id: $RELEASE_ID"
           for APK in "$LOGS_DIR"/zcode-e2-*.apk; do
             NAME=$(basename "$APK")
-            # delete stale asset with the same name (idempotent re-runs)
+            # delete stale asset with the same name (idempotent re-runs);
+            # pass the name as argv — shell vars are NOT exported to python
             for ASSET_ID in $(curl -s -H "$AUTH" "$API/releases/$RELEASE_ID/assets?per_page=100" \
-                                | python3 -c 'import json,sys,os; [print(a["id"]) for a in json.load(sys.stdin) if a["name"]==os.environ["NAME"]]'); do
+                                | python3 -c 'import json,sys; [print(a["id"]) for a in json.load(sys.stdin) if a["name"]==sys.argv[1]]' "$NAME"); do
               echo "deleting stale asset $NAME ($ASSET_ID)"
               curl -s -X DELETE -H "$AUTH" "$API/releases/assets/$ASSET_ID" || true
+              sleep 2
             done
             echo "uploading $NAME"
             CODE=$(curl -s -o /tmp/up.json -w '%{http_code}' -X POST \
               -H "$AUTH" -H "Content-Type: application/octet-stream" \
               --data-binary "@$APK" \
               "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$NAME")
+            if [ "$CODE" != "201" ]; then
+              echo "upload -> HTTP $CODE; one retry after forced stale-asset cleanup"
+              curl -s -H "$AUTH" "$API/releases/$RELEASE_ID/assets?per_page=100" \
+                | python3 -c 'import json,sys; [print(a["id"]) for a in json.load(sys.stdin) if a["name"]==sys.argv[1]]' "$NAME" \
+                | while read -r ASSET_ID; do curl -s -X DELETE -H "$AUTH" "$API/releases/assets/$ASSET_ID" || true; done
+              sleep 3
+              CODE=$(curl -s -o /tmp/up.json -w '%{http_code}' -X POST \
+                -H "$AUTH" -H "Content-Type: application/octet-stream" \
+                --data-binary "@$APK" \
+                "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$NAME")
+            fi
             [ "$CODE" = "201" ] || { echo "FATAL: asset upload $NAME -> HTTP $CODE"; cat /tmp/up.json; exit 1; }
             echo "uploaded: $NAME"
           done
