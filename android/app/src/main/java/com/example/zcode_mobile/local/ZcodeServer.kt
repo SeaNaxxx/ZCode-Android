@@ -226,7 +226,12 @@ object ZcodeServer {
             if (healthy) {
                 // Owner check 1+2 evidence: WHICH process owns the port, and how
                 // long the official web entry took to answer on this device.
-                val pid = runCatching { proc.pid() }.getOrDefault(-1L)
+                // Reflection: java.lang.Process#pid() is not resolvable by the
+                // Kotlin toolchain on all android.jar targets; the pid is
+                // evidence, never a requirement (-1 = unknown).
+                val pid = runCatching {
+                    proc.javaClass.getMethod("pid").invoke(proc) as Long
+                }.getOrDefault(-1L)
                 WebDiagnostics.log(
                     "probe",
                     "local: node pid=$pid spawned as: ${RuntimePaths.nodeBin(app).name} " +

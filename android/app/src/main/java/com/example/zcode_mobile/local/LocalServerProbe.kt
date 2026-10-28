@@ -40,6 +40,8 @@ object LocalServerProbe {
      *  - a region-neutral control host.
      */
     const val NET_PROBE_SCRIPT = """// E2 outbound connectivity probe (no credentials, HEAD only).
+// NOTE: plain string concatenation only — no JS template literals, because
+// Kotlin raw strings interpolate the dollar-brace syntax as Kotlin templates.
 const targets = process.argv.slice(2);
 (async () => {
   for (const u of targets) {
@@ -47,11 +49,11 @@ const targets = process.argv.slice(2);
     try {
       const res = await fetch(u, { method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(8000) });
       const ms = Date.now() - t0;
-      console.log(`RESULT ${u} -> HTTP ${res.status} in ${ms}ms (tls=${u.startsWith("https:")})`);
+      console.log("RESULT " + u + " -> HTTP " + res.status + " in " + ms + "ms (tls=" + (u.indexOf("https:") === 0) + ")");
     } catch (e) {
       const ms = Date.now() - t0;
       const cause = e && e.cause ? (e.cause.code || e.cause.message) : "";
-      console.log(`RESULT ${u} -> FAILED after ${ms}ms ${e && e.name ? e.name : "Error"} ${cause}`.trimEnd());
+      console.log(("RESULT " + u + " -> FAILED after " + ms + "ms " + (e && e.name ? e.name : "Error") + " " + cause).trimEnd());
     }
   }
 })();"""
