@@ -562,7 +562,19 @@ private const val JS_VISUAL_STATE = """(function(){
   var hits = [[0.5,0.35],[0.5,0.5],[0.5,0.65],[0.25,0.5],[0.75,0.5]].map(function(p){ var el = document.elementFromPoint(window.innerWidth * p[0], window.innerHeight * p[1]); return dsc(el); });
   var anims = [];
   try { if (document.getAnimations) document.getAnimations().slice(0,5).forEach(function(a){ anims.push((a.animationName || a.constructor.name) + ':' + a.playState); }); } catch(e) { anims.push('err:' + e.message); }
-  return JSON.stringify({ vis: document.visibilityState, hidden: document.hidden, focus: document.hasFocus(), docHiddenAttr: document.documentElement.hasAttribute('data-document-hidden'), bootTheme: document.documentElement.getAttribute('data-zcode-bootstrap-theme'), dark: document.documentElement.classList.contains('dark'), iframes: document.querySelectorAll('iframe').length, anims: anims, hits: hits, nodes: nodes });
+  // Viewport-unit resolution probe: measure what 100vh / 100dvh / 100% ACTUALLY
+  // resolve to in this engine state (failure-3 emulator evidence 2026-10-28:
+  // html/body/#root collapse to 0 while innerHeight is 912 — this tells WHICH
+  // unit breaks: dvh vs the percentage chain vs the ICB itself).
+  function unitProbe(cssText){ var p = document.createElement('div'); p.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;' + cssText; document.body.appendChild(p); var h = p.getBoundingClientRect().height; p.remove(); return Math.round(h); }
+  var vp = { inner: window.innerWidth + 'x' + window.innerHeight, client: document.documentElement.clientWidth + 'x' + document.documentElement.clientHeight };
+  try { if (window.visualViewport) vp.vv = Math.round(window.visualViewport.height) + '@' + Math.round(window.visualViewport.offsetTop || 0) + ' s=' + Number(window.visualViewport.scale).toFixed(3); } catch(e) {}
+  try { vp.vh100 = unitProbe('height:100vh'); } catch(e) { vp.vh100 = 'err'; }
+  try { vp.dvh100 = unitProbe('height:100dvh'); } catch(e) { vp.dvh100 = 'err'; }
+  try { vp.pct100 = unitProbe('height:100%'); } catch(e) { vp.pct100 = 'err'; }
+  var heights = [];
+  [document.documentElement, document.body, root, root.firstElementChild].forEach(function(el){ if (!el) return; var cs = getComputedStyle(el); heights.push(dsc(el) + ' cssH=' + cs.height + ' offH=' + el.offsetHeight + ' scrollH=' + el.scrollHeight); });
+  return JSON.stringify({ vis: document.visibilityState, hidden: document.hidden, focus: document.hasFocus(), docHiddenAttr: document.documentElement.hasAttribute('data-document-hidden'), bootTheme: document.documentElement.getAttribute('data-zcode-bootstrap-theme'), dark: document.documentElement.classList.contains('dark'), iframes: document.querySelectorAll('iframe').length, anims: anims, hits: hits, vp: vp, heights: heights, nodes: nodes });
 })()"""
 
 private const val JS_FORCE_VIS = """(function(){
@@ -588,6 +600,39 @@ private const val JS_RESTORE = """(function(){
   st.els.forEach(function(el, i){ var before = st.saved[i] || {}; st.props.forEach(function(p){ if (before[p]) { el.style.setProperty(p, before[p]); } else { el.style.removeProperty(p); } }); n++; });
   delete window.__e2restore;
   return JSON.stringify({ restored: n });
+})()"""
+
+/**
+ * Layout-repair experiment (failure-3 root-cause isolation, emulator evidence
+ * 2026-10-28: html/body/#root collapse to 0 while innerHeight reports 912;
+ * the RootShell root is div.relative.h-dvh = 100dvh). Forces the viewport-
+ * height chain to 100vh inline on html/body/#root/wrapper, reports the
+ * wrapper rect, captures bitmap[repaired] via the caller, then RESTORES the
+ * original inline cssText. Diagnostic-only; the production CSS is untouched.
+ * If the welcome card becomes visible in bitmap[repaired], the dvh/ICB
+ * collapse is the demonstrated black-screen mechanism.
+ */
+private const val JS_LAYOUT_REPAIR = """(function(){
+  var root = document.getElementById('root');
+  if (!root) return JSON.stringify({ error: 'no-root' });
+  var els = [document.documentElement, document.body, root];
+  if (root.firstElementChild) els.push(root.firstElementChild);
+  var saved = els.map(function(el){ return el.style.cssText; });
+  els.forEach(function(el){ el.style.setProperty('height','100vh','important'); el.style.setProperty('min-height','0','important'); });
+  var w = root.firstElementChild;
+  var r = w ? w.getBoundingClientRect() : null;
+  var main = w ? w.querySelector('main') : null;
+  var mr = main ? main.getBoundingClientRect() : null;
+  window.__e2layoutRestore = { els: els, saved: saved };
+  return JSON.stringify({ repaired: els.length, wrapperRect: r ? [Math.round(r.x),Math.round(r.y),Math.round(r.width),Math.round(r.height)] : null, mainRect: mr ? [Math.round(mr.x),Math.round(mr.y),Math.round(mr.width),Math.round(mr.height)] : null, vv: window.visualViewport ? Math.round(window.visualViewport.height) : null });
+})()"""
+
+private const val JS_LAYOUT_RESTORE = """(function(){
+  var st = window.__e2layoutRestore;
+  if (!st) return JSON.stringify({ restored: 0 });
+  st.els.forEach(function(el, i){ el.style.cssText = st.saved[i] || ''; });
+  delete window.__e2layoutRestore;
+  return JSON.stringify({ restored: st.els.length });
 })()"""
 
 /**
@@ -667,17 +712,31 @@ private fun runVisualEvidenceSequence(view: WebView, originalUrl: String) {
                 evaluateJs(view, JS_RESTORE) { r ->
                     WebDiagnostics.log("probe", "styles-restored: ${r.take(160)}")
                     view.postDelayed({
-                        WebDiagnostics.log("probe", "minimal-html: loading isolated paint test in same WebView")
-                        runCatching {
-                            view.loadDataWithBaseURL(null, MINIMAL_PAINT_HTML, "text/html", "utf-8", null)
-                        }.onFailure { WebDiagnostics.log("probe", "minimal-html load failed: ${it.message}") }
-                        view.postDelayed({
-                            captureAndAnalyze(view, "minimal")
+                        // layout-repair experiment: force the 100vh chain on the
+                        // collapsed root and capture — decisive for the dvh/ICB
+                        // collapse mechanism (emulator: wrapper h-dvh measured 0).
+                        evaluateJs(view, JS_LAYOUT_REPAIR) { lr ->
+                            WebDiagnostics.log("probe", "layout-repair: ${lr.take(400)}")
                             view.postDelayed({
-                                WebDiagnostics.log("probe", "minimal-html done; reloading original page")
-                                view.loadUrl(originalUrl)
-                            }, 500)
-                        }, 2_500)
+                                captureAndAnalyze(view, "repaired")
+                                evaluateJs(view, JS_LAYOUT_RESTORE) { lr2 ->
+                                    WebDiagnostics.log("probe", "layout-restored: ${lr2.take(160)}")
+                                    view.postDelayed({
+                                        WebDiagnostics.log("probe", "minimal-html: loading isolated paint test in same WebView")
+                                        runCatching {
+                                            view.loadDataWithBaseURL(null, MINIMAL_PAINT_HTML, "text/html", "utf-8", null)
+                                        }.onFailure { WebDiagnostics.log("probe", "minimal-html load failed: ${it.message}") }
+                                        view.postDelayed({
+                                            captureAndAnalyze(view, "minimal")
+                                            view.postDelayed({
+                                                WebDiagnostics.log("probe", "minimal-html done; reloading original page")
+                                                view.loadUrl(originalUrl)
+                                            }, 500)
+                                        }, 2_500)
+                                    }, 400)
+                                }
+                            }, 1_000)
+                        }
                     }, 400)
                 }
             }, 1_000)

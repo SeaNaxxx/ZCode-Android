@@ -35,7 +35,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // failure-3 A/B instrument (emulator evidence 2026-10-28: the WebView's
+        // viewport-unit chain collapses to 0 under edge-to-edge — the suspected
+        // trigger is the edge-to-edge <-> WebView insets interaction). The
+        // marker file DISABLES edge-to-edge for controlled CI experiments;
+        // default behavior is unchanged. Diagnostic hook, not a product switch.
+        val edgeToEdgeDisabledByMarker = runCatching {
+            java.io.File(filesDir, "e2-no-edge-to-edge").isFile
+        }.getOrDefault(false)
+        if (edgeToEdgeDisabledByMarker) {
+            RuntimeBus.append("edge-to-edge: OFF (e2-no-edge-to-edge marker present — A/B experiment config)")
+        } else {
+            enableEdgeToEdge()
+        }
         if (BuildConfig.DEBUG) {
             android.webkit.WebView.setWebContentsDebuggingEnabled(true)
         }

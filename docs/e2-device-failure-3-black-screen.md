@@ -316,3 +316,61 @@ instrument; the first emulator evidence set lands with CI run 40652320738
 Release hygiene: release tags are now DERIVED from versionName
 (`e2-<versionName>`), so every future bump publishes to its own tag —
 e2-rc2/e2-rc3 history stays untouched.
+
+## Addendum 3 (2026-10-28, CI run 40660693522): FIRST emulator evidence set — root-cause CLASS demonstrated
+
+Run 40660693522 (0.3.6-e2, API 33 AVD, 9/9 stages green; the two earlier
+setup-tap failures in run 40652320738 attempts 1-2 were emulator ANR flakes —
+the identical stage passed here). The visual suite captured, for the FIRST
+time, the actual rendered state inside the black-screening WebView:
+
+- `visual-state`: `vis:"visible"`, `hidden:false`, `docHiddenAttr:false` →
+  the `installDocumentHiddenMotionPause` hypothesis is DEAD (the document is
+  visible and no pause marker is set).
+- **LAYOUT COLLAPSE (the demonstrated class)**: html/body/#root and the
+  RootShell root (`div.relative.h-dvh` = `100dvh`, upstream comment explains
+  it avoids fixed 100vh for mobile address bars) all measure **393x0**; the
+  welcome `main` is 393x48; the login card sits at `[16,-168 361x384]` —
+  i.e. pushed ABOVE the viewport and clipped by `overflow-hidden`.
+  `elementFromPoint` at all five probe points returns `html` — nothing else
+  is laid out at any sample point.
+- `bitmap[before]`: `uniformBlack=0% distinctColors=1 dominant=#161616
+  100%` — the WebView bitmap contains ONLY the page background (`#161616`
+  IS the zai-dark theme background; the near-black threshold correctly does
+  NOT classify it as black).
+- `bitmap[forced]`: `dominant=#ffcc00 100%` → style restyling reaches the
+  compositor instantly → **the paint pipeline WORKS**.
+- `bitmap[minimal]`: `dominant=#e11d48 93%, 8 colors` → the isolated page
+  paints fully in the SAME WebView.
+- AVD screenshot `screen-frontend-open.png`: uniform dark WebView area under
+  the light app top bar — matches the Vivo symptom exactly.
+
+Conclusion: NOT a compositor failure, NOT visibilityState, NOT an overlay,
+NOT a stuck opacity animation — **the page's viewport-height chain collapses
+to 0 in this WebView** (RootShell `100dvh` + the `height:100%` chain), so the
+whole app tree lays out into a zero-height strip, the login card is clipped
+out, and only the dark background paints. The page renders fine in external
+browsers (Vivo 4th export), so the trigger is the app↔WebView integration.
+
+### Round 0.3.7-e2 (10) — the decisive experiments (this build)
+
+1. `visual-state` now measures what each unit ACTUALLY resolves to in this
+   engine state: `vp.vh100` / `vp.dvh100` / `vp.pct100` (offscreen probe
+   elements), `documentElement.clientHeight`, `visualViewport`
+   height/offset/scale, and computed cssH/offH/scrollH for
+   html/body/#root/wrapper — pinpointing WHICH link collapses.
+2. `layout-repair` experiment: forces `height:100vh` inline on
+   html/body/#root/wrapper, captures `bitmap[repaired]`, reports the wrapper
+   and main rects, then RESTORES the original cssText. If the card becomes
+   visible in the bitmap, the dvh/ICB collapse is the proven mechanism.
+3. `frontend-smoke-b` CI stage: full A/B with **edge-to-edge OFF** (runtime
+   marker `files/e2-no-edge-to-edge` → MainActivity skips
+   `enableEdgeToEdge()`; default behavior unchanged). If config B recovers
+   real viewport heights and the card paints, the root cause is the
+   edge-to-edge ↔ WebView insets interaction on API 33, and the fix is
+   app-side decor-fitting — no upstream page changes, no contract changes.
+
+Interpretation keys: `vp.dvh100=0` + `vp.vh100>0` → dvh collapse
+(edge-to-edge/insets); `vp.pct100=0` too → ICB collapse; `bitmap[repaired]`
+shows the card → mechanism proven; config-B `bitmap[before]` shows content →
+trigger = edge-to-edge.
