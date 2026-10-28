@@ -120,6 +120,14 @@ object BionicEnv {
         if (certsDir.isDirectory) {
             env["SSL_CERT_DIR"] = certsDir.absolutePath
         }
+        // git's compiled-in template path also points at the Termux prefix
+        // (observed on-device: "warning: templates not found in
+        // /data/data/com.termux/.../git-core/templates" — commit still
+        // succeeded, but init/clone should get proper templates).
+        val templates = File(usr, "share/git-core/templates")
+        if (templates.isDirectory) {
+            env["GIT_TEMPLATE_DIR"] = templates.absolutePath
+        }
         // NOTE: verification is deliberately left enabled — this function
         // never sets NODE_TLS_REJECT_UNAUTHORIZED, never empties CA paths.
     }

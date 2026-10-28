@@ -412,6 +412,7 @@ jobs:
           [ -f "\$OPENSSL_CONF" ] || { echo "FATAL: openssl.cnf missing at \$OPENSSL_CONF"; exit 13; }
           [ -d "\$PREFIX/lib/ossl-modules" ] && export OPENSSL_MODULES=\$PREFIX/lib/ossl-modules
           export GIT_SSL_CAINFO=\$SSL_CERT_FILE
+          [ -d "\$PREFIX/share/git-core/templates" ] && export GIT_TEMPLATE_DIR=\$PREFIX/share/git-core/templates
           export GIT_EXEC_PATH=\$PREFIX/libexec/git-core
           export GIT_CONFIG_NOSYSTEM=1
           export PAGER=cat GIT_PAGER=cat
@@ -706,8 +707,11 @@ jobs:
           adb push scripts/e2/assets/e2-tls-https-probe.cjs /data/local/tmp/e2-tls-https-probe.cjs > /dev/null
           stage_run net-restore -- bash -c '
             set -e
+            # the offline stage disabled wifi+data too — re-enable ALL of them
             adb shell cmd connectivity airplane-mode disable
-            for i in $(seq 1 30); do
+            adb shell svc wifi enable || true
+            adb shell svc data enable || true
+            for i in $(seq 1 60); do
               sleep 2
               if adb shell ping -c 1 -W 2 8.8.8.8 > /dev/null 2>&1; then
                 echo "network restored after ~$((i*2))s"; exit 0
