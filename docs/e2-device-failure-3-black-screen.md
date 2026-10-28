@@ -80,3 +80,34 @@ Remaining hypotheses (in priority order, all testable with the new instrumentati
    - `RENDERER GONE` → H4;
    - `probe external … FAILED` lines classify provider connectivity
      independently of the UI question.
+
+## Addendum (same day, CI runs 40627330416 / 40630785519 / 40637657592)
+
+Emulator evidence (API 33 AVD, x86_64, WebView Chromium 109) — the black
+screen REPRODUCES in CI:
+
+- `dom-state`: `readyState complete`, `rootChildren 1`, `rootHtmlLen 15007`,
+  `bodyText: "Welcome to ZCode / Connect your account to start using ZCode /
+  Connect to Z.ai (Global) / Connect to BigModel (CN) / Use API key"` — the
+  intended FIRST SCREEN IS A LOGIN/CONNECT SCREEN, and its DOM is fully there.
+- WebView bounds `[0,166][1080,2340]` (full size) — layout hypothesis dead.
+- Zero JS console errors, zero `net::ERR`, no renderer death — H2/H3 dead.
+- App theme is LIGHT: the black body is the WebView painting the PAGE
+  background — so painting works for the background but NOT for the content.
+- `LAYER_TYPE_SOFTWARE` A/B: screen STILL black with CPU rasterization
+  (run 40637657592) — the GPU compositing path is NOT the trigger.
+
+Remaining demonstrated fact: content exists in the DOM, background paints,
+content pixels never appear, on both raster paths. Prime suspect for the
+next experiment: entrance-animation state in the web UI
+(`installDocumentHiddenMotionPause` in packages/web/src/main.tsx — motion
+paused while `document.visibilityState` is reported hidden would leave an
+opacity-0 first frame). Next instrumentation: add
+`document.visibilityState` to the dom-state probe; if `hidden` in the
+WebView, that is the demonstrated root cause and the fix is a
+WebView-visible-state correction, not a rendering one.
+
+Device build for the next Vivo test: `0.3.4-e2 (7)` (versionCode 7, release
+e2-rc2 assets, updated 2026-10-28). It already exports everything needed to
+discriminate the hypotheses on the device: dom-state (+ bodyText), WebView
+provider/version, console, probes, raster mode.
