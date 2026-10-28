@@ -655,6 +655,35 @@ jobs:
             adb logcat -d | grep -E "zcode|agent\||mock\|" | tail -25 || true
           '
 
+      - name: frontend-smoke | open WebView, capture console + DOM state (failure-3 evidence)
+        continue-on-error: true
+        run: |
+          source /tmp/e2-stage-lib.sh
+          stage_run frontend-smoke -- bash -c '
+            set -e
+            adb logcat -c || true
+            ui_tap_text "Open ZCode" 60 || { echo "FAIL: Open ZCode button not found"; exit 1; }
+            echo "tapped Open ZCode; waiting 25s for frontend boot..."
+            sleep 25
+            shot frontend-open
+            ui_dump || true
+            if grep -q "android.webkit.WebView" "$LOGS_DIR/ui-dump.xml" 2>/dev/null; then
+              echo "WebView node present in UI dump"
+            else
+              echo "WARN: no android.webkit.WebView node in UI dump"
+            fi
+            adb logcat -d > "$LOGS_DIR/frontend-smoke-logcat.txt" 2>/dev/null || true
+            echo "--- JS console (chromium CONSOLE lines) ---"
+            grep -E "INFO:CONSOLE|:CONSOLE" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -40 || true
+            echo "--- fatal UI signals ---"
+            grep -E "Uncaught|SyntaxError|ReferenceError|net::ERR|Render process gone|RENDERER GONE" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -20 || true
+            echo "--- app-side webview evidence (ZCodeWeb tag: lifecycle + dom-state + probes) ---"
+            grep "ZCodeWeb" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -60 || true
+            grep -q "android.webkit.WebView" "$LOGS_DIR/ui-dump.xml" 2>/dev/null || { echo "FAIL: WebView absent - evidence could not be collected"; exit 1; }
+            echo "FRONTEND-SMOKE EVIDENCE COLLECTED (render verdict lives in dom-state + console evidence)"
+            ui_tap_text "Status" 30 || adb shell input keyevent KEYCODE_BACK || true
+          '
+
       - name: e2-agent | ON-DEVICE agent loop with embedded mock (offline)
         run: |
           source /tmp/e2-stage-lib.sh
@@ -782,7 +811,7 @@ jobs:
           import json, os, sys
           d = sys.argv[1]
           stages = ["install", "offline", "setup-tap", "node-probe", "openssl-offline", "start-tap",
-                    "e2-agent", "e2-verify", "persistence", "net-restore", "tls-https", "emu-boot"]
+                    "frontend-smoke", "e2-agent", "e2-verify", "persistence", "net-restore", "tls-https", "emu-boot"]
           rows = []
           for s in stages:
               p = os.path.join(d, s + ".json")
@@ -795,6 +824,7 @@ jobs:
               "node-probe": "embedded node/git/bash exec on Android userspace (criterion 2; ARM64 proof deferred to device)",
               "openssl-offline": "OpenSSL init inside app runtime + verified TLS handshake, ZERO network (failure-2 acceptance; Termux-path leak = FAIL)",
               "start-tap": "official ZCode --web + embedded mock on-device",
+              "frontend-smoke": "black-screen evidence: WebView lifecycle + JS console + DOM state (render verdict is evidence, not CI green)",
               "e2-agent": "real agent loop end-to-end (mock model; auth/billing NOT exercised)",
               "e2-verify": "agent effects verified on disk (criterion 3 mechanics)",
               "persistence": "restart survival, no re-provision (criterion 5 mechanics)",

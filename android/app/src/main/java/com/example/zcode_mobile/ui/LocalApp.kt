@@ -46,11 +46,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.zcode_mobile.BuildConfig
 import com.example.zcode_mobile.R
+import com.example.zcode_mobile.local.LocalServerProbe
+import com.example.zcode_mobile.local.DiagLog
 import com.example.zcode_mobile.local.LocalServerService
 import com.example.zcode_mobile.local.Provisioner
 import com.example.zcode_mobile.local.RuntimeBus
 import com.example.zcode_mobile.local.RuntimePaths
 import com.example.zcode_mobile.local.RuntimeState
+import com.example.zcode_mobile.local.WebDiagnostics
 import com.example.zcode_mobile.local.ZcodeServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -101,6 +104,18 @@ fun LocalApp(
     LaunchedEffect(Unit) {
         if (Provisioner.isProvisioned(context) && state is RuntimeState.NotProvisioned) {
             RuntimeBus.setState(RuntimeState.Ready)
+        }
+    }
+
+    // Evidence probes fire once per transition into Running (device failure 3
+    // protocol: local-server / external / persistence evidence are separate
+    // classes). Fire-and-forget — they must never block or break the UI.
+    LaunchedEffect(state is RuntimeState.Running) {
+        if (state is RuntimeState.Running) {
+            launch {
+                runCatching { LocalServerProbe.runAll(context) }
+                    .onFailure { RuntimeBus.append("probe run failed: ${it.message}") }
+            }
         }
     }
 
@@ -276,6 +291,7 @@ private fun buildDiagnostics(context: android.content.Context): String {
     sb.appendLine("app: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
     sb.appendLine("embedded bionic bundle: ${RuntimePaths.hasBionicAssets(context)}")
     sb.appendLine("runtime provisioned: ${RuntimePaths.provisioned(context)}")
+    sb.appendLine("webview provider: ${WebDiagnostics.webViewProviderInfo(context)}")
     RuntimePaths.marker(context).takeIf { it.isFile }?.let {
         sb.appendLine("marker: ${it.readText().take(500)}")
     }
@@ -287,6 +303,8 @@ private fun buildDiagnostics(context: android.content.Context): String {
     )
     sb.appendLine("--- runtime log (last 150 lines) ---")
     RuntimeBus.log.value.takeLast(150).forEach { sb.appendLine(it) }
+    sb.appendLine("--- webview / js / probe evidence (last 250 lines) ---")
+    DiagLog.snapshot().takeLast(250).forEach { sb.appendLine(it) }
     sb.appendLine("--- provider config / credentials are NOT included in this export ---")
     return sb.toString()
 }
@@ -318,6 +336,14 @@ private fun LogConsole(lines: List<String>) {
     }
 }
 
+/**
+ * Device failure 3 instrumentation (Vivo V2035, 2026-10-28): the server ran
+ * and the RPC layer was alive, but the screen stayed black and NOTHING on the
+ * UI side was observable. This WebView records the page lifecycle, every
+ * JavaScript console message, every resource/HTTP error, renderer death, and
+ * a post-load DOM snapshot (element counts + visible text + UA) — without
+ * touching any credential storage. All evidence goes to WebDiagnostics.
+ */
 @Composable
 private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -337,11 +363,111 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
-                    webViewClient = WebViewClient()
+                    WebDiagnostics.log("webview", "created; will load $url")
+                    WebDiagnostics.log("webview", "default UA: ${settings.userAgentString}")
+                    WebDiagnostics.log("webview", "provider: ${WebDiagnostics.webViewProviderInfo(ctx)}")
+                    webViewClient = object : WebViewClient() {
+                        override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: android.graphics.Bitmap?) {
+                            WebDiagnostics.log("webview", "onPageStarted $pageUrl")
+                        }
+
+                        override fun onPageCommitVisible(view: WebView?, pageUrl: String?) {
+                            WebDiagnostics.log("webview", "onPageCommitVisible $pageUrl")
+                        }
+
+                        override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+                            WebDiagnostics.log("webview", "onPageFinished $finishedUrl")
+                            view?.postDelayed({ dumpDomState(view) }, 4_000)
+                        }
+
+                        override fun onReceivedError(
+                            view: WebView?,
+                            request: android.webkit.WebResourceRequest?,
+                            error: android.webkit.WebResourceError?,
+                        ) {
+                            val target = request?.url?.toString() ?: "?"
+                            if (request?.isForMainFrame == true || target.startsWith("http")) {
+                                WebDiagnostics.log(
+                                    "webview",
+                                    "onReceivedError code=${error?.errorCode} desc=${error?.description} url=$target"
+                                )
+                            }
+                        }
+
+                        override fun onReceivedHttpError(
+                            view: WebView?,
+                            request: android.webkit.WebResourceRequest?,
+                            response: android.webkit.WebResourceResponse?,
+                        ) {
+                            WebDiagnostics.log(
+                                "webview",
+                                "onReceivedHttpError status=${response?.statusCode} " +
+                                    "url=${request?.url ?: "?"}"
+                            )
+                        }
+
+                        override fun onRenderProcessGone(
+                            view: WebView?,
+                            detail: android.webkit.RenderProcessGoneDetail?,
+                        ): Boolean {
+                            WebDiagnostics.log(
+                                "webview",
+                                "RENDERER GONE (didCrash=${detail?.didCrash()}) — UI cannot recover " +
+                                    "this WebView; evidence recorded"
+                            )
+                            // Returning true: the WebView is gone either way; keep the
+                            // app process alive so diagnostics can still be shared.
+                            (view?.parent as? android.view.ViewGroup)?.removeAllViews()
+                            return true
+                        }
+                    }
+                    webChromeClient = object : android.webkit.WebChromeClient() {
+                        override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+                            WebDiagnostics.log(
+                                "js",
+                                "${consoleMessage?.messageLevel()}: ${consoleMessage?.message()} " +
+                                    "@ ${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()}"
+                            )
+                            return true
+                        }
+
+                        override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                            if (newProgress >= 100) {
+                                WebDiagnostics.log("webview", "onProgressChanged 100")
+                            }
+                        }
+                    }
                     loadUrl(url)
                 }
             }
         )
+    }
+}
+
+/**
+ * Read-only snapshot of what the page actually rendered. Distinguishes the
+ * black-screen hypotheses: boot shell with an EMPTY #root (React never
+ * mounted / crashed at import), a mounted tree with no visible text, or a
+ * fully rendered UI. No storage, no cookies, no tokens — DOM shape + short
+ * visible text only.
+ */
+private fun dumpDomState(view: WebView?) {
+    view?.evaluateJavascript(
+        """(function(){
+        var root = document.getElementById('root');
+        return JSON.stringify({
+          readyState: document.readyState,
+          href: location.href,
+          rootChildren: root ? root.children.length : -1,
+          rootHtmlLen: root ? root.innerHTML.length : -1,
+          bodyText: ((document.body && document.body.innerText) || '').slice(0, 200),
+          viewport: window.innerWidth + 'x' + window.innerHeight,
+          dpr: window.devicePixelRatio,
+          ua: navigator.userAgent
+        });
+      })()"""
+    ) { value ->
+        WebDiagnostics.log("webview", "dom-state: ${value.take(700)}")
     }
 }
 

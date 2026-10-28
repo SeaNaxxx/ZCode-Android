@@ -212,7 +212,8 @@ object ZcodeServer {
             }.apply { isDaemon = true }.start()
 
             val url = RuntimePaths.SERVER_URL
-            val deadline = System.currentTimeMillis() + 120_000L
+            val startedAt = System.currentTimeMillis()
+            val deadline = startedAt + 120_000L
             var healthy = false
             while (System.currentTimeMillis() < deadline) {
                 if (!proc.isAlive) {
@@ -223,6 +224,15 @@ object ZcodeServer {
                 Thread.sleep(2_000)
             }
             if (healthy) {
+                // Owner check 1+2 evidence: WHICH process owns the port, and how
+                // long the official web entry took to answer on this device.
+                val pid = runCatching { proc.pid() }.getOrDefault(-1L)
+                WebDiagnostics.log(
+                    "probe",
+                    "local: node pid=$pid spawned as: ${RuntimePaths.nodeBin(app).name} " +
+                        "${RuntimePaths.distWebEntry(app).name} --web (args in runtime log); " +
+                        "GET $url health OK after ${(System.currentTimeMillis() - startedAt) / 1000}s"
+                )
                 RuntimeBus.setState(RuntimeState.Running(url))
                 return
             }
