@@ -707,17 +707,41 @@ jobs:
           adb push scripts/e2/assets/e2-tls-https-probe.cjs /data/local/tmp/e2-tls-https-probe.cjs > /dev/null
           stage_run net-restore -- bash -c '
             set -e
-            # the offline stage disabled wifi+data too — re-enable ALL of them
+            # the offline stage disabled airplane-mode AND wifi AND data —
+            # re-enable all three. Known emulator quirk (runs 40602719913 /
+            # 40606283651): airplane-mode disable does NOT restore the
+            # default network within 120s on API 33 images. Primary check is
+            # dumpsys (no ICMP dependency); deterministic fallback = reboot.
             adb shell cmd connectivity airplane-mode disable
             adb shell svc wifi enable || true
             adb shell svc data enable || true
-            for i in $(seq 1 60); do
+            restored=0
+            for i in $(seq 1 30); do
               sleep 2
-              if adb shell ping -c 1 -W 2 8.8.8.8 > /dev/null 2>&1; then
-                echo "network restored after ~$((i*2))s"; exit 0
+              if adb shell dumpsys connectivity 2>/dev/null | grep -q "Active default network: [0-9]"; then
+                echo "network restored after ~$((i*2))s"; restored=1; break
               fi
             done
-            echo "FATAL: network did not return after airplane-mode disable"; exit 1
+            if [ "$restored" != "1" ]; then
+              echo "network did not return via airplane toggle -> rebooting emulator (deterministic restore)"
+              adb reboot || true
+              adb wait-for-device
+              for i in $(seq 1 60); do
+                b=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r" || true)
+                [ "$b" = "1" ] && break
+                sleep 3
+              done
+              sleep 15
+              adb shell svc wifi enable || true
+              adb shell svc data enable || true
+              for i in $(seq 1 30); do
+                sleep 2
+                if adb shell dumpsys connectivity 2>/dev/null | grep -q "Active default network: [0-9]"; then
+                  echo "network restored after reboot (~$((i*2))s)"; restored=1; break
+                fi
+              done
+            fi
+            [ "$restored" = "1" ] || { echo "FATAL: network did not return"; exit 1; }
           '
           stage_run tls-https -- bash -c '
             set -e
