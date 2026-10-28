@@ -611,9 +611,17 @@ private const val JS_VISUAL_STATE = """(function(){
   try { vp.vh100 = unitProbe('height:100vh'); } catch(e) { vp.vh100 = 'err'; }
   try { vp.dvh100 = unitProbe('height:100dvh'); } catch(e) { vp.dvh100 = 'err'; }
   try { vp.pct100 = unitProbe('height:100%'); } catch(e) { vp.pct100 = 'err'; }
+  // Media queries share the viewport source with the units: if they agree with
+  // clientHeight (791) while vh100=0, the split is inside the style system;
+  // if they ALSO report 0, the whole layout viewport is 0 and JS metrics lie.
+  var ih = Math.round(window.innerHeight);
+  var mq = { compat: document.compatMode,
+    mqInner: window.matchMedia('(height: ' + ih + 'px)').matches,
+    mqZero: window.matchMedia('(height: 0px)').matches,
+    mqMin700: window.matchMedia('(min-height: 700px)').matches };
   var heights = [];
   [document.documentElement, document.body, root, root.firstElementChild].forEach(function(el){ if (!el) return; var cs = getComputedStyle(el); heights.push(dsc(el) + ' cssH=' + cs.height + ' offH=' + el.offsetHeight + ' scrollH=' + el.scrollHeight); });
-  return JSON.stringify({ vis: document.visibilityState, hidden: document.hidden, focus: document.hasFocus(), docHiddenAttr: document.documentElement.hasAttribute('data-document-hidden'), bootTheme: document.documentElement.getAttribute('data-zcode-bootstrap-theme'), dark: document.documentElement.classList.contains('dark'), iframes: document.querySelectorAll('iframe').length, anims: anims, hits: hits, vp: vp, heights: heights, nodes: nodes });
+  return JSON.stringify({ vis: document.visibilityState, hidden: document.hidden, focus: document.hasFocus(), docHiddenAttr: document.documentElement.hasAttribute('data-document-hidden'), bootTheme: document.documentElement.getAttribute('data-zcode-bootstrap-theme'), dark: document.documentElement.classList.contains('dark'), iframes: document.querySelectorAll('iframe').length, anims: anims, hits: hits, vp: vp, mq: mq, heights: heights, nodes: nodes });
 })()"""
 
 private const val JS_FORCE_VIS = """(function(){
@@ -675,16 +683,24 @@ private const val JS_LAYOUT_RESTORE = """(function(){
 })()"""
 
 /**
- * Isolated paint test per owner protocol: solid background + visible text +
- * an interactive button, loaded into the SAME WebView instance. Evidence
- * only — never a UI replacement.
+ * Isolated paint test per owner protocol — UPGRADED to be the DECISIVE
+ * engine-vs-page discriminator: a 100vh div (green) + an on-screen report of
+ * the measured vh/innerHeight/100% values so the bitmap itself carries the
+ * verdict. Solid background + visible text + an interactive button kept.
+ * Evidence only — never a UI replacement.
  */
 private const val MINIMAL_PAINT_HTML =
     "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head>" +
         "<body style=\"margin:0;background:#e11d48;height:100vh;\">" +
-        "<div style=\"font:700 44px sans-serif;color:#ffffff;padding:36px 24px;\">E2 PAINT TEST</div>" +
+        "<div id=\"vh\" style=\"position:absolute;top:0;left:0;width:100%;height:100vh;background:#00cc44;\"></div>" +
+        "<div style=\"position:absolute;top:0;left:0;background:#000;color:#0f0;font:700 30px monospace;padding:10px;z-index:10;\">MEASURING</div>" +
         "<button id=\"e2t\" onclick=\"document.getElementById('e2t').textContent='TAPPED-OK'\" " +
-        "style=\"font:700 30px sans-serif;padding:26px 34px;margin:20px 24px;\">BUTTON</button>" +
+        "style=\"position:absolute;bottom:40px;left:24px;font:700 30px sans-serif;padding:26px 34px;\">BUTTON</button>" +
+        "<script>setTimeout(function(){var d=document.getElementById('vh').getBoundingClientRect().height;" +
+        "var p=document.createElement('div');p.style.cssText='position:absolute;height:100%;width:2px;visibility:hidden';" +
+        "document.body.appendChild(p);var pc=Math.round(p.getBoundingClientRect().height);p.remove();" +
+        "var q=document.querySelector('div[style*=\"z-index:10\"]');" +
+        "q.textContent='VH='+Math.round(d)+' INNER='+window.innerHeight+' PCT='+pc;},300);</script>" +
         "</body></html>"
 
 private fun evaluateJs(view: WebView, script: String, onResult: (String) -> Unit) {
@@ -770,6 +786,31 @@ private fun runVisualEvidenceSequence(view: WebView, originalUrl: String) {
                                             view.postDelayed({
                                                 WebDiagnostics.log("probe", "minimal-html done; reloading original page")
                                                 view.loadUrl(originalUrl)
+                                                // RELOAD-RECOVERY probe: a fresh document
+                                                // created in the now fully-sized view —
+                                                // does the collapse clear? (probe-only;
+                                                // the mutation experiments stay one-shot)
+                                                view.postDelayed({
+                                                    evaluateJs(view, JS_VISUAL_STATE) { value ->
+                                                        WebDiagnostics.log("probe", "visual-state-reload: ${value.take(2400)}")
+                                                        // WIDE-VIEWPORT A/B (config C): the
+                                                        // wide viewport mode drives a
+                                                        // different layout-size path in
+                                                        // Chromium. Toggle + reload + probe.
+                                                        runCatching {
+                                                            view.settings.useWideViewPort = true
+                                                            view.settings.loadWithOverviewMode = true
+                                                        }.onFailure { WebDiagnostics.log("probe", "wide-viewport toggle failed: ${it.message}") }
+                                                        WebDiagnostics.log("probe", "config C: useWideViewPort=true + loadWithOverviewMode=true, reloading")
+                                                        view.reload()
+                                                        view.postDelayed({
+                                                            evaluateJs(view, JS_VISUAL_STATE) { value2 ->
+                                                                WebDiagnostics.log("probe", "visual-state-wide: ${value2.take(2400)}")
+                                                                WebDiagnostics.log("probe", "evidence sequence complete")
+                                                            }
+                                                        }, 8_000)
+                                                    }
+                                                }, 8_000)
                                             }, 500)
                                         }, 2_500)
                                     }, 400)

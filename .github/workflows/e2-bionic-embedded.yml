@@ -681,8 +681,8 @@ jobs:
             set -e
             adb logcat -c || true
             ui_tap_text "Open ZCode" 60 || { echo "FAIL: Open ZCode button not found"; exit 1; }
-            echo "tapped Open ZCode; waiting 25s for frontend boot..."
-            sleep 25
+            echo "tapped Open ZCode; waiting 45s for frontend boot + evidence sequence..."
+            sleep 45
             shot frontend-open
             ui_dump || true
             # preserve the dump of THIS stage (later stages overwrite ui-dump.xml)
@@ -701,7 +701,7 @@ jobs:
             echo "--- app-side webview evidence (ZCodeWeb tag: lifecycle + dom-state + probes) ---"
             grep "ZCodeWeb" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -60 || true
             echo "--- visual paint evidence (failure-3 suite: visual-state / bitmap / force-vis / layout-repair / minimal-html) ---"
-            grep -E "visual-state:|bitmap|force-vis|styles-restored|layout-repair|layout-restored|minimal-html|shot saved" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -40 || true
+            grep -E "visual-state|bitmap|force-vis|styles-restored|layout-repair|layout-restored|minimal-html|shot saved|config C|first layout|fallback load" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -45 || true
             grep -q "android.webkit.WebView" "$LOGS_DIR/ui-dump.xml" 2>/dev/null || { echo "FAIL: WebView absent - evidence could not be collected"; exit 1; }
             echo "FRONTEND-SMOKE EVIDENCE COLLECTED (render verdict lives in bitmap + visual-state + console evidence)"
             ui_tap_text "Status" 30 || adb shell input keyevent KEYCODE_BACK || true
@@ -716,8 +716,9 @@ jobs:
             # CONFIG B: the MainActivity skips enableEdgeToEdge() when this
             # marker exists (runtime diagnostic hook). The foreground-service
             # runtime is killed by force-stop, so the full start flow repeats.
-            adb shell run-as '"$PKG"' sh -c "echo off > /data/data/'"$PKG"'/files/e2-no-edge-to-edge"
-            [ "$(adb shell run-as '"$PKG"' sh -c 'test -f /data/data/'"$PKG"'/files/e2-no-edge-to-edge && echo present' | tr -d '\r')" = "present" ] || { echo "FAIL: marker not written (config B)"; exit 1; }
+            adb shell run-as '"$PKG"' sh -c "echo off > /data/data/$PKG/files/e2-no-edge-to-edge"
+            MARK=$(adb shell run-as '"$PKG"' ls /data/data/$PKG/files/e2-no-edge-to-edge | tr -d "\r")
+            [ -n "$MARK" ] || { echo "FAIL: marker not written (config B)"; exit 1; }
             adb shell am force-stop '"$PKG"' || true
             sleep 3
             adb shell am start -n '"$PKG"'/.MainActivity > /dev/null
@@ -733,13 +734,13 @@ jobs:
             [ "$OK" = "1" ] || { echo "FAIL: not Running (config B)"; exit 1; }
             adb logcat -c || true
             ui_tap_text "Open ZCode" 60 || { echo "FAIL: Open ZCode not found (config B)"; exit 1; }
-            sleep 25
+            sleep 45
             shot frontend-b-open
             ui_dump || true
             cp "$LOGS_DIR/ui-dump.xml" "$LOGS_DIR/frontend-smoke-b-ui.xml" 2>/dev/null || true
             adb logcat -d > "$LOGS_DIR/frontend-smoke-b-logcat.txt" 2>/dev/null || true
             echo "--- CONFIG B (edge-to-edge OFF) visual paint evidence ---"
-            grep -E "visual-state:|bitmap|force-vis|layout-repair|layout-restored|minimal-html|edge-to-edge" "$LOGS_DIR/frontend-smoke-b-logcat.txt" | tail -40 || true
+            grep -E "visual-state|bitmap|force-vis|layout-repair|minimal-html|edge-to-edge|first layout|config C" "$LOGS_DIR/frontend-smoke-b-logcat.txt" | tail -45 || true
             echo "CONFIG-B EVIDENCE COLLECTED"
             ui_tap_text "Status" 30 || adb shell input keyevent KEYCODE_BACK || true
           '
