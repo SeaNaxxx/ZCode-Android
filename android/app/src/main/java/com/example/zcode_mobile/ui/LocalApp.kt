@@ -502,12 +502,12 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                             val vh = v?.height ?: 0
                             if (vw > 0 && vh > 0 && !started) {
                                 started = true
-                                v?.removeOnLayoutChangeListener(this)
+                                removeOnLayoutChangeListener(this)
                                 WebDiagnostics.log(
                                     "webview",
                                     "first layout ${vw}x$vh -> loadUrl now (pre-layout viewport latch avoided: failure-3 fix)"
                                 )
-                                v?.loadUrl(url)
+                                loadUrl(url)
                             }
                         }
                     })
