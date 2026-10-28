@@ -222,13 +222,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          TAG="e2-rc2"
+          TAG="e2-rc3"
           API="https://api.github.com/repos/${{ github.repository }}"
           AUTH="Authorization: Bearer $GH_TOKEN"
-          # create release (idempotent: if it exists, fetch it)
+          # NEW TAG for 0.3.5-e2 (8): the owner constraint forbids silently
+          # overwriting release assets while keeping an ambiguous version label.
+          # e2-rc2 keeps its historical 0.3.x artifacts untouched.
           REL_CODE=$(curl -s -o /tmp/rel.json -w '%{http_code}' -X POST "$API/releases" \
             -H "$AUTH" -H "Accept: application/vnd.github+json" \
-            -d "{\"tag_name\":\"$TAG\",\"target_commitish\":\"$GITHUB_SHA\",\"name\":\"E2 embedded Bionic APKs (rc2 — libz.so.1 hard-link fix)\",\"prerelease\":true,\"body\":\"Direct .apk downloads (no zip wrapper). arm64 = Vivo V2035 retest build (0.3.1-e2, versionCode 4): linker-critical sonames shipped as real hard links + on-device critical-file gate + real symlink-failure diagnostics. x86_64 = AVD regression build.\"}")
+            -d "{\"tag_name\":\"$TAG\",\"target_commitish\":\"$GITHUB_SHA\",\"name\":\"E2 embedded Bionic APKs (rc3 — visual-state paint evidence suite)\",\"prerelease\":true,\"body\":\"Direct .apk downloads (no zip wrapper). arm64 = Vivo V2035 retest build (0.3.5-e2, versionCode 8): failure-3 visual-state evidence suite — visibilityState + computed-style/rect DOM walk from the LIVE DOM, WebView bitmap paint capture with pixel statistics, diagnostic-only force-visibility experiment (styles restored), isolated minimal-HTML paint test in the same WebView. x86_64 = AVD regression build.\"}")
           if [ "$REL_CODE" != "201" ]; then
             echo "release create -> HTTP $REL_CODE (fetching existing)"
             RELEASE_ID=$(curl -s -H "$AUTH" "$API/releases/tags/$TAG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
@@ -696,8 +698,10 @@ jobs:
             grep -E "Uncaught|SyntaxError|ReferenceError|net::ERR|Render process gone|RENDERER GONE" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -20 || true
             echo "--- app-side webview evidence (ZCodeWeb tag: lifecycle + dom-state + probes) ---"
             grep "ZCodeWeb" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -60 || true
+            echo "--- visual paint evidence (failure-3 suite 0.3.5-e2: visual-state / bitmap / force-vis / minimal-html) ---"
+            grep -E "visual-state:|bitmap\[|force-vis|styles-restored|minimal-html|shot saved" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -30 || true
             grep -q "android.webkit.WebView" "$LOGS_DIR/ui-dump.xml" 2>/dev/null || { echo "FAIL: WebView absent - evidence could not be collected"; exit 1; }
-            echo "FRONTEND-SMOKE EVIDENCE COLLECTED (render verdict lives in dom-state + console evidence)"
+            echo "FRONTEND-SMOKE EVIDENCE COLLECTED (render verdict lives in bitmap + visual-state + console evidence)"
             ui_tap_text "Status" 30 || adb shell input keyevent KEYCODE_BACK || true
           '
 
@@ -841,7 +845,7 @@ jobs:
               "node-probe": "embedded node/git/bash exec on Android userspace (criterion 2; ARM64 proof deferred to device)",
               "openssl-offline": "OpenSSL init inside app runtime + verified TLS handshake, ZERO network (failure-2 acceptance; Termux-path leak = FAIL)",
               "start-tap": "official ZCode --web + embedded mock on-device",
-              "frontend-smoke": "black-screen evidence: WebView lifecycle + JS console + DOM state (render verdict is evidence, not CI green)",
+              "frontend-smoke": "black-screen evidence: WebView lifecycle + JS console + DOM state + visual-state/bitmap/force-vis/minimal-html paint suite (render verdict is evidence, not CI green)",
               "e2-agent": "real agent loop end-to-end (mock model; auth/billing NOT exercised)",
               "e2-verify": "agent effects verified on disk (criterion 3 mechanics)",
               "persistence": "restart survival, no re-provision (criterion 5 mechanics)",

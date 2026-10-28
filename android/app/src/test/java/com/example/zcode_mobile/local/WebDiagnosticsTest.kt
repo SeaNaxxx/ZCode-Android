@@ -62,4 +62,38 @@ class WebDiagnosticsTest {
     fun `persistence marker file name is workspace-relative dotfile`() {
         assertEquals(".e2-persistence.json", LocalServerProbe.PERSISTENCE_FILE)
     }
+
+    @Test
+    fun `uniform black bitmap reports renderer produced nothing`() {
+        // A captured bitmap that is 100% near-black is the "renderer produced
+        // no pixels" verdict for the paint-evidence chain (failure-3 suite).
+        val pixels = IntArray(400) { 0xFF060816.toInt() } // page dark bg #060816: r=6,g=8,b=22 -> NOT near-black
+        val s = WebDiagnostics.analyzePixels(pixels)
+        // b=22 is above the near-black threshold: dark THEME backgrounds must
+        // not be misclassified as "black screen".
+        assertFalse(s.contains("uniformBlack=100%"))
+        assertTrue(s.contains("distinctColors=1"))
+        assertTrue(s.contains("dominant=#060816"))
+        val black = IntArray(400) { 0xFF000000.toInt() }
+        val sb = WebDiagnostics.analyzePixels(black)
+        assertTrue(sb.contains("uniformBlack=100%"))
+        assertTrue(sb.contains("distinctColors=1"))
+        assertTrue(sb.contains("dominant=#000000"))
+    }
+
+    @Test
+    fun `painted content produces distinct color buckets`() {
+        // Half white, half accent red: content pixels => distinctColors > 1
+        // and the dominant share well below 100%.
+        val pixels = IntArray(400) { if (it < 200) 0xFFFFFFFF.toInt() else 0xFFE11D48.toInt() }
+        val s = WebDiagnostics.analyzePixels(pixels)
+        assertTrue(s.contains("distinctColors=2"))
+        assertFalse(s.contains("uniformBlack=100%"))
+        assertTrue(s.contains("dominantShare=50%"))
+    }
+
+    @Test
+    fun `empty sample set is reported without crashing`() {
+        assertEquals("no-samples", WebDiagnostics.analyzePixels(IntArray(0)))
+    }
 }

@@ -111,3 +111,96 @@ Device build for the next Vivo test: `0.3.4-e2 (7)` (versionCode 7, release
 e2-rc2 assets, updated 2026-10-28). It already exports everything needed to
 discriminate the hypotheses on the device: dom-state (+ bodyText), WebView
 provider/version, console, probes, raster mode.
+
+## Addendum (2026-10-28, later): 0.3.4-e2 (7) device result + visual-paint evidence suite (0.3.5-e2 (8))
+
+### What the 0.3.4-e2 (7) Vivo run established (owner export, 10:14:07)
+
+The black screen PERSISTS on the device with the same signature as the AVD:
+`readyState complete`, `rootChildren 1`, `rootHtmlLen 15007`, welcome text in
+`bodyText`, WebView `com.google.android.webview 157.0.8103.14`, and the
+software-raster mitigation active (`raster: SOFTWARE`) — i.e. the GPU
+compositing path is confirmed NOT the trigger on real hardware either. The
+WebView was (re)created three times in the export window and every load shows
+the same DOM-complete/black-screen pair.
+
+### Static source analysis done before this build (no fix possible from it)
+
+`packages/web/index.html` (boot shell): the page intentionally boots DARK
+(`DEFAULT_THEME = "zai-dark"`, body background `#0f172a`/`#161616` family) —
+a black-looking background is NORMAL for this page; the missing part is the
+content above it. `WelcomeScreen.tsx` / `ThemeHeroVisual` contain no
+framer-motion and no base-`opacity:0` entrance pattern; the
+`installDocumentHiddenMotionPause` CSS (`html[data-document-hidden] * {
+transition: none; animation: none }`) only disables animations — static
+content would stay visible under it. Conclusion: the source alone does not
+prove any of the candidate mechanisms; the decisive data must come from the
+LOADED DOM and the actual painted pixels — which is exactly what the next
+build collects.
+
+### The 0.3.5-e2 (8) evidence suite (this build, per owner protocol)
+
+One-shot chain per WebView instance (~5 s after load; never for the isolated
+data:-URL test itself; every step timestamped in the `webview/js/probe`
+export section):
+
+1. `visual-state:` — `document.visibilityState` / `document.hidden` /
+   `hasFocus` (the WebView-visible-state question behind
+   `installDocumentHiddenMotionPause`), the `data-document-hidden` attribute,
+   boot theme + `dark` class, iframe count, live animation list with play
+   states, `elementFromPoint()` at five viewport points, and computed
+   `display/visibility/opacity/color/background` + `getBoundingClientRect()`
+   for `html`, `body`, `#root` and the REAL top-3-level subtree walked from
+   the loaded DOM (selectors are read, never assumed; shadow roots marked).
+2. `bitmap[before]` — the WebView's OWN painted output via `view.draw()`:
+   quantized pixel statistics (`uniformBlack` / `distinctColors` /
+   `dominant`) + PNG saved under `files/logs/webview-before-*.png`. This
+   separates "renderer produced nothing" (uniform bitmap) from "bitmap has
+   the UI but the screen is black" (occlusion/compositing ABOVE the WebView).
+   Near-black threshold (r,g,b < 14) deliberately excludes the dark-theme
+   backgrounds (`#060816`, `#0f172a`, `#161616`) so a dark THEME is never
+   misclassified as a black screen.
+3. `force-vis:` + `bitmap[forced]` — diagnostic-only experiment: inline
+   `opacity:1/visibility:visible/display:block(if none)/transform:none/
+   animation:none/transition:none/content-visibility:visible` on the walked
+   subtree, `data-document-hidden` removed, and a bright `#ffcc00` marker
+   background forced on html/body. Then `styles-restored:` returns every
+   touched inline property to its saved value (the production CSS is never
+   changed). Interpretation: pixels turn yellow but no content → restyle
+   reaches the compositor, content itself is hidden by its own styles; content
+   appears → it was style-hidden (the walk names the element); bitmap stays
+   black → the renderer produces no frames at all.
+4. `minimal-html` + `bitmap[minimal]` — isolated solid-background page with
+   visible text and an interactive button loaded in the SAME WebView
+   instance, then the original page is reloaded. Distinguishes a general
+   WebView paint failure (minimal page also black) from a ZCode-frontend
+   -specific one (minimal page paints red, real UI stays black). Evidence
+   only — the real UI is never replaced.
+
+`force-vis` also reports `docHiddenAttrWas` — the direct test of whether
+`installDocumentHiddenMotionPause` was active at load time; the production
+behavior itself is NOT modified (per owner constraint).
+
+Unit tests: `WebDiagnosticsTest` now pins the pixel-classification semantics
+(dark-theme background ≠ black screen; painted content ⇒ distinct buckets).
+
+CI: the `frontend-smoke` stage (API 33 AVD, where the black screen
+reproduces) now surfaces the suite lines (`visual-state:` / `bitmap[` /
+`force-vis` / `styles-restored` / `minimal-html` / `shot saved`). Emulator
+results remain clearly separated from Vivo results; the device verdict comes
+only from the physical-device export.
+
+Release hygiene: this build publishes to the NEW tag `e2-rc3` with explicit
+version labels (0.3.5-e2, versionCode 8) — e2-rc2 artifacts are not touched
+(owner constraint: no ambiguous asset overwrites).
+
+### Interpretation keys for the next Vivo export
+
+| Evidence pair | Verdict |
+| --- | --- |
+| `bitmap[before]` uniformBlack≈100% + `bitmap[minimal]` red | paint pipeline works; ZCode frontend content is the problem → read `visual-state` nodes for the hidden/zero-opacity element |
+| `bitmap[before]` uniformBlack≈100% + `bitmap[minimal]` uniformBlack≈100% | renderer produces no frames at all → WebView/compositing-level failure, not CSS |
+| `bitmap[before]` shows content (distinct colors, text) while SCREEN is black | occlusion above the WebView → Android view-hierarchy problem |
+| `visual-state vis:"hidden"` or `docHiddenAttrWas:true` | WebView visible-state bug → fix is attach/visibility handling, not rendering |
+| `bitmap[forced]` shows content | style-hidden content (opacity/visibility/animation stuck) — the walked node list names the culprit |
+| `hits` show an unexpected full-screen element at all 5 points | an overlay covers the UI — its selector is in the log |

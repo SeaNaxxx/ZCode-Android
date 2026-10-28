@@ -1,6 +1,8 @@
 package com.example.zcode_mobile.ui
 
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
 import android.webkit.WebView
@@ -305,6 +307,12 @@ private fun buildDiagnostics(context: android.content.Context): String {
     RuntimeBus.log.value.takeLast(150).forEach { sb.appendLine(it) }
     sb.appendLine("--- webview / js / probe evidence (last 250 lines) ---")
     DiagLog.snapshot().takeLast(250).forEach { sb.appendLine(it) }
+    // On-device bitmap captures from the paint-evidence chain (pull via
+    // `adb shell run-as com.example.zcode_mobile ls files/logs` when needed).
+    File(context.filesDir, "logs").listFiles { f -> f.name.startsWith("webview-") }
+        ?.sortedByDescending { it.lastModified() }
+        ?.take(6)
+        ?.forEach { sb.appendLine("bitmap-capture: files/logs/${it.name} (${it.length()}B)") }
     sb.appendLine("--- provider config / credentials are NOT included in this export ---")
     return sb.toString()
 }
@@ -360,6 +368,7 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
+                var experimentRan = false
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
@@ -387,7 +396,18 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
 
                         override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                             WebDiagnostics.log("webview", "onPageFinished $finishedUrl")
-                            view?.postDelayed({ dumpDomState(view) }, 4_000)
+                            if (view == null) return
+                            view.postDelayed({ dumpDomState(view) }, 4_000)
+                            // failure-3 follow-up (owner protocol, 2026-10-28): the
+                            // decisive visual-state evidence chain — runs ONCE per
+                            // WebView instance, never for the isolated data:-URL
+                            // paint test itself. Read-only probes + a diagnostic-only
+                            // force-visibility experiment + restore + isolated paint
+                            // test; every step leaves a timestamped evidence line.
+                            if (!experimentRan && finishedUrl != null && !finishedUrl.startsWith("data:")) {
+                                experimentRan = true
+                                view.postDelayed({ runVisualEvidenceSequence(view, url) }, 5_200)
+                            }
                         }
 
                         override fun onReceivedError(
@@ -478,6 +498,178 @@ private fun dumpDomState(view: WebView?) {
       })()"""
     ) { value ->
         WebDiagnostics.log("webview", "dom-state: ${value.take(700)}")
+    }
+}
+
+/*
+ * ============================================================================
+ * failure-3 visual-state evidence suite (0.3.5-e2, owner protocol 2026-10-28)
+ * ============================================================================
+ * Established device/AVD fact: DOM fully populated (rootChildren=1,
+ * rootHtmlLen=15007, welcome text present), page background paints, content
+ * pixels never appear, on BOTH raster paths (GPU + LAYER_TYPE_SOFTWARE).
+ *
+ * What was still missing — and what this suite captures, in one timestamped
+ * chain, without inventing selectors (everything is read from the LIVE DOM):
+ *
+ *  1. visual-state — document.visibilityState/hidden (the WebView-visible
+ *     state question, i.e. whether installDocumentHiddenMotionPause sees a
+ *     hidden document), the data-document-hidden marker, computed
+ *     display/visibility/opacity/color/background + getBoundingClientRect()
+ *     for html, body, #root and the REAL top-3-level subtree (walked from the
+ *     loaded DOM), elementFromPoint() at five viewport points, live animation
+ *     list with play states, iframe count and shadow-root markers.
+ *  2. bitmap[before] — the WebView's own painted output via view.draw():
+ *     quantized pixel statistics + a PNG saved under files/logs/. This is the
+ *     "did the renderer actually produce pixels" evidence, separable from a
+ *     black SCREEN (occlusion above the WebView would leave the bitmap intact).
+ *  3. force-vis (diagnostic-only) — inline-forces opacity/visibility/display
+ *     on the walked subtree, removes data-document-hidden, and paints a bright
+ *     #ffcc00 marker background on html/body; then bitmap[forced]. If pixels
+ *     turn yellow but content stays missing, style restyling reaches the
+ *     compositor and the content itself is the problem; if content appears,
+ *     it was style-hidden (opacity/visibility/animation state) — the walk
+ *     names the element. Original inline styles are restored afterwards.
+ *  4. minimal-html — an isolated solid-background page with visible text and
+ *     an interactive button loaded in the SAME WebView instance; bitmap[minimal]
+ *     separates a general WebView paint failure from a ZCode-frontend-specific
+ *     one. This is evidence only — never shipped as a UI replacement.
+ *
+ * Privacy: no storage/cookie/token access; the walk logs geometry + computed
+ * style values only. PNG captures stay on-device (files/logs/).
+ */
+private const val JS_VISUAL_STATE = """(function(){
+  function dsc(el){ if(!el) return 'null'; var s = el.id ? '#'+el.id : el.tagName.toLowerCase(); var c = (el.getAttribute && el.getAttribute('class')) || ''; if (c) { var p = c.trim().split(/\s+/).slice(0,3).join('.'); if (p) s += '.' + p; } return s; }
+  function stl(el){ var cs = getComputedStyle(el); return 'd=' + cs.display + ' v=' + cs.visibility + ' o=' + cs.opacity + ' pos=' + cs.position + ' z=' + cs.zIndex + ' color=' + cs.color + ' bg=' + cs.backgroundColor; }
+  function rc(el){ var r = el.getBoundingClientRect(); return '[' + Math.round(r.x) + ',' + Math.round(r.y) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height) + ']'; }
+  var nodes = [];
+  nodes.push(dsc(document.documentElement) + ' ' + rc(document.documentElement) + ' ' + stl(document.documentElement));
+  if (document.body) nodes.push(dsc(document.body) + ' ' + rc(document.body) + ' ' + stl(document.body));
+  var root = document.getElementById('root');
+  (function walk(el, d){ if (!el || d > 3 || nodes.length > 24) return; if (el.shadowRoot) nodes.push('SHADOW-ROOT-AT:' + dsc(el)); nodes.push(dsc(el) + ' ' + rc(el) + ' ' + stl(el)); var k = el.children || []; for (var i = 0; i < k.length && i < 6; i++) walk(k[i], d + 1); })(root, 0);
+  var hits = [[0.5,0.35],[0.5,0.5],[0.5,0.65],[0.25,0.5],[0.75,0.5]].map(function(p){ var el = document.elementFromPoint(window.innerWidth * p[0], window.innerHeight * p[1]); return dsc(el); });
+  var anims = [];
+  try { if (document.getAnimations) document.getAnimations().slice(0,5).forEach(function(a){ anims.push((a.animationName || a.constructor.name) + ':' + a.playState); }); } catch(e) { anims.push('err:' + e.message); }
+  return JSON.stringify({ vis: document.visibilityState, hidden: document.hidden, focus: document.hasFocus(), docHiddenAttr: document.documentElement.hasAttribute('data-document-hidden'), bootTheme: document.documentElement.getAttribute('data-zcode-bootstrap-theme'), dark: document.documentElement.classList.contains('dark'), iframes: document.querySelectorAll('iframe').length, anims: anims, hits: hits, nodes: nodes });
+})()"""
+
+private const val JS_FORCE_VIS = """(function(){
+  var root = document.getElementById('root');
+  if (!root) return JSON.stringify({ error: 'no-root' });
+  var els = [document.documentElement, document.body, root];
+  (function collect(el, d){ if (!el || d > 3 || els.length > 40) return; var k = el.children || []; for (var i = 0; i < k.length && i < 8; i++) { els.push(k[i]); collect(k[i], d + 1); } })(root, 0);
+  var PROPS = ['opacity','visibility','display','transform','animation','transition','content-visibility','background'];
+  var saved = [];
+  els.forEach(function(el){ var before = {}; PROPS.forEach(function(p){ before[p] = el.style.getPropertyValue(p); }); saved.push(before); el.style.setProperty('opacity','1','important'); el.style.setProperty('visibility','visible','important'); if (getComputedStyle(el).display === 'none') el.style.setProperty('display','block','important'); el.style.setProperty('transform','none','important'); el.style.setProperty('animation','none','important'); el.style.setProperty('transition','none','important'); el.style.setProperty('content-visibility','visible','important'); });
+  var attrWas = document.documentElement.hasAttribute('data-document-hidden');
+  document.documentElement.removeAttribute('data-document-hidden');
+  document.documentElement.style.setProperty('background','#ffcc00','important');
+  document.body.style.setProperty('background','#ffcc00','important');
+  window.__e2restore = { els: els, saved: saved, props: PROPS };
+  return JSON.stringify({ forced: els.length, docHiddenAttrWas: attrWas, vis: document.visibilityState });
+})()"""
+
+private const val JS_RESTORE = """(function(){
+  var st = window.__e2restore;
+  if (!st) return JSON.stringify({ restored: 0 });
+  var n = 0;
+  st.els.forEach(function(el, i){ var before = st.saved[i] || {}; st.props.forEach(function(p){ if (before[p]) { el.style.setProperty(p, before[p]); } else { el.style.removeProperty(p); } }); n++; });
+  delete window.__e2restore;
+  return JSON.stringify({ restored: n });
+})()"""
+
+/**
+ * Isolated paint test per owner protocol: solid background + visible text +
+ * an interactive button, loaded into the SAME WebView instance. Evidence
+ * only — never a UI replacement.
+ */
+private const val MINIMAL_PAINT_HTML =
+    "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head>" +
+        "<body style=\"margin:0;background:#e11d48;height:100vh;\">" +
+        "<div style=\"font:700 44px sans-serif;color:#ffffff;padding:36px 24px;\">E2 PAINT TEST</div>" +
+        "<button id=\"e2t\" onclick=\"document.getElementById('e2t').textContent='TAPPED-OK'\" " +
+        "style=\"font:700 30px sans-serif;padding:26px 34px;margin:20px 24px;\">BUTTON</button>" +
+        "</body></html>"
+
+private fun evaluateJs(view: WebView, script: String, onResult: (String) -> Unit) {
+    runCatching { view.evaluateJavascript(script) { value -> onResult(value) } }
+        .onFailure { WebDiagnostics.log("probe", "evaluateJavascript failed: ${it.message}") }
+}
+
+/**
+ * Capture the WebView's own painted output (works regardless of what covers
+ * it on screen) and log quantized pixel statistics — the decisive
+ * "renderer produced pixels / produced nothing" discriminator — plus a PNG
+ * under files/logs/ for offline inspection.
+ */
+private fun captureAndAnalyze(view: WebView, label: String) {
+    runCatching {
+        val w = view.width
+        val h = view.height
+        if (w == 0 || h == 0) {
+            WebDiagnostics.log("probe", "bitmap[$label]: view not laid out (${w}x$h)")
+            return
+        }
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        view.draw(Canvas(bmp))
+        val xs = 40
+        val ys = 80
+        val pixels = IntArray(xs * ys)
+        var idx = 0
+        for (yy in 0 until ys) {
+            val py = if (h == 1) 0 else (yy * (h - 1)) / (ys - 1)
+            for (xx in 0 until xs) {
+                val px = if (w == 1) 0 else (xx * (w - 1)) / (xs - 1)
+                pixels[idx++] = bmp.getPixel(px, py)
+            }
+        }
+        WebDiagnostics.log("probe", "bitmap[$label]: ${w}x${h} -> ${WebDiagnostics.analyzePixels(pixels)}")
+        saveShotPng(view, bmp, label)
+        bmp.recycle()
+    }.onFailure { WebDiagnostics.log("probe", "bitmap[$label] failed: ${it.message}") }
+}
+
+private fun saveShotPng(view: WebView, bmp: Bitmap, label: String) {
+    runCatching {
+        val dir = File(view.context.filesDir, "logs").apply { mkdirs() }
+        val f = File(dir, "webview-$label-${System.currentTimeMillis()}.png")
+        java.io.FileOutputStream(f).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        WebDiagnostics.log("probe", "shot saved: ${f.name} (${f.length()}B)")
+    }.onFailure { WebDiagnostics.log("probe", "shot save failed: ${it.message}") }
+}
+
+/**
+ * One-shot evidence chain (UI thread via evaluateJavascript callbacks and
+ * view.postDelayed): visual-state -> bitmap[before] -> force-vis ->
+ * bitmap[forced] -> restore -> minimal-html -> bitmap[minimal] -> reload.
+ */
+private fun runVisualEvidenceSequence(view: WebView, originalUrl: String) {
+    WebDiagnostics.log("probe", "visual evidence sequence start (one-shot per WebView)")
+    evaluateJs(view, JS_VISUAL_STATE) { value ->
+        WebDiagnostics.log("probe", "visual-state: ${value.take(2400)}")
+        captureAndAnalyze(view, "before")
+        evaluateJs(view, JS_FORCE_VIS) { fv ->
+            WebDiagnostics.log("probe", "force-vis: ${fv.take(300)}")
+            view.postDelayed({
+                captureAndAnalyze(view, "forced")
+                evaluateJs(view, JS_RESTORE) { r ->
+                    WebDiagnostics.log("probe", "styles-restored: ${r.take(160)}")
+                    view.postDelayed({
+                        WebDiagnostics.log("probe", "minimal-html: loading isolated paint test in same WebView")
+                        runCatching {
+                            view.loadDataWithBaseURL(null, MINIMAL_PAINT_HTML, "text/html", "utf-8", null)
+                        }.onFailure { WebDiagnostics.log("probe", "minimal-html load failed: ${it.message}") }
+                        view.postDelayed({
+                            captureAndAnalyze(view, "minimal")
+                            view.postDelayed({
+                                WebDiagnostics.log("probe", "minimal-html done; reloading original page")
+                                view.loadUrl(originalUrl)
+                            }, 500)
+                        }, 2_500)
+                    }, 400)
+                }
+            }, 1_000)
+        }
     }
 }
 
