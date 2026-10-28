@@ -681,7 +681,7 @@ jobs:
             sleep 25
             shot frontend-open
             ui_dump || true
-            # preserve THIS stage's dump (later stages overwrite ui-dump.xml)
+            # preserve the dump of THIS stage (later stages overwrite ui-dump.xml)
             cp "$LOGS_DIR/ui-dump.xml" "$LOGS_DIR/frontend-smoke-ui.xml" 2>/dev/null || true
             python3 /tmp/e2-webview-bounds.py || true
             if grep -q "android.webkit.WebView" "$LOGS_DIR/ui-dump.xml" 2>/dev/null; then
