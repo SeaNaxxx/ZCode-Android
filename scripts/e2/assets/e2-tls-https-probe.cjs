@@ -34,6 +34,10 @@ assert(!process.env.NODE_TLS_REJECT_UNAUTHORIZED,
 assert(tls.rootCertificates.length > 100, 'node root store unexpectedly small');
 
 https.get(url, { headers: { 'User-Agent': 'zcode-e2-tls-probe', Accept: '*/*' }, timeout: 25000 }, (res) => {
+  // Capture the socket NOW: by the 'end' event node may already have
+  // detached it (res.socket === null — seen on the API 33 emulator run
+  // 40612790771). The evidence must come from the live connection.
+  const sock = res.socket;
   let size = 0;
   res.on('data', (d) => { size += d.length; if (size > 65536) res.destroy(); });
   res.on('end', () => {
@@ -43,15 +47,16 @@ https.get(url, { headers: { 'User-Agent': 'zcode-e2-tls-probe', Accept: '*/*' },
       arch: process.arch,
       url,
       httpsStatus: res.statusCode,
-      tlsAuthorized: res.socket.authorized,
-      tlsProtocol: res.socket.getProtocol(),
-      tlsCipher: res.socket.getCipher().name,
+      tlsAuthorized: sock ? sock.authorized : null,
+      tlsProtocol: sock && sock.getProtocol ? sock.getProtocol() : null,
+      tlsCipher: sock && sock.getCipher ? sock.getCipher().name : null,
       rootCertificates: tls.rootCertificates.length,
       opensslConf: conf,
     };
+    assert(sock, 'TLS socket already detached — cannot prove verification state');
     assert.strictEqual(res.statusCode, 200, 'HTTPS status ' + res.statusCode);
-    assert.strictEqual(res.socket.authorized, true,
-      'certificate NOT authorized: ' + res.socket.authorizationError);
+    assert.strictEqual(sock.authorized, true,
+      'certificate NOT authorized: ' + (sock.authorizationError || 'unknown'));
     console.log('TLS-HTTPS-OK ' + JSON.stringify(evidence));
     process.exit(0);
   });
