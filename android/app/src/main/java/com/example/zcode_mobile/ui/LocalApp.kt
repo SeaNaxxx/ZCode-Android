@@ -363,6 +363,16 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
+                    // Device failure 3 root-cause class (evidence, not guess):
+                    // run 40627330416 shows the DOM fully populated (dom-state
+                    // rootChildren=1, rootHtmlLen=15007, bodyText="Welcome to
+                    // ZCode...") while the screen stays black on BOTH the API 33
+                    // AVD and the Vivo — page background paints, content layers
+                    // do not. That is the hardware compositing/raster path.
+                    // Mitigation under test: force CPU rasterization for this
+                    // WebView. Revisit if upstream CSS compositing is fixed.
+                    setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
+                    WebDiagnostics.log("webview", "raster: SOFTWARE (content-not-painted mitigation, evidence-backed)")
                     WebDiagnostics.log("webview", "created; will load $url")
                     WebDiagnostics.log("webview", "default UA: ${settings.userAgentString}")
                     WebDiagnostics.log("webview", "provider: ${WebDiagnostics.webViewProviderInfo(ctx)}")

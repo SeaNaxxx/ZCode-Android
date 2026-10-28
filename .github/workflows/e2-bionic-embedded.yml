@@ -667,6 +667,19 @@ jobs:
             sleep 25
             shot frontend-open
             ui_dump || true
+            # preserve THIS stage's dump (later stages overwrite ui-dump.xml)
+            cp "$LOGS_DIR/ui-dump.xml" "$LOGS_DIR/frontend-smoke-ui.xml" 2>/dev/null || true
+            python3 - <<'PY' || true
+          import os, re
+          p = os.path.join(os.environ["LOGS_DIR"], "frontend-smoke-ui.xml")
+          try:
+              t = open(p, encoding="utf-8", errors="replace").read()
+          except OSError:
+              t = ""
+          for m in re.finditer(r'<node[^>]*class="android\.webkit\.WebView"[^>]*>', t):
+              b = re.search(r'bounds="(\[[^"]+\])"', m.group(0))
+              print("WEBVIEW-BOUNDS:", b.group(1) if b else "?")
+          PY
             if grep -q "android.webkit.WebView" "$LOGS_DIR/ui-dump.xml" 2>/dev/null; then
               echo "WebView node present in UI dump"
             else
