@@ -374,3 +374,54 @@ Interpretation keys: `vp.dvh100=0` + `vp.vh100>0` → dvh collapse
 (edge-to-edge/insets); `vp.pct100=0` too → ICB collapse; `bitmap[repaired]`
 shows the card → mechanism proven; config-B `bitmap[before]` shows content →
 trigger = edge-to-edge.
+
+## Addendum 4 (2026-10-28, CI run 40665560040): mechanism PINNED to the unit level — fix implemented (0.3.8-e2 (11))
+
+Run 40665560040 (0.3.7-e2) completed 9/9 on the API 33 AVD. The unit-
+resolution probes measured, inside the black-screening WebView:
+
+```
+inner=393x791   client=393x791   vv=791@0 s=1.000   ← JS-level viewports SANE
+vh100=0  dvh100=0  pct100=0                          ← ALL CSS viewport units = 0
+html cssH=0px offH=0 scrollH=791                     ← root collapses, content 791
+#root cssH=0px offH=0 scrollH=48
+layout-repair: forcing height:100vh!important on
+html/body/#root/wrapper -> wrapperRect STILL [0,0,393,0];
+bitmap[repaired] unchanged (100% #161616)
+```
+
+Interpretation: the document was CREATED while the WebView had no size
+(`loadUrl()` runs in the AndroidView factory, BEFORE Compose attaches/ lays
+out the view) and this WebView state latches the CSS viewport-height
+resolution to 0 for the document's lifetime — JS viewport properties update
+(innerHeight/clientHeight/visualViewport all 791) but viewport UNITS and
+percentage chains never re-resolve. Forcing 100vh inline cannot repair a
+frozen document-level latch. RootShell (`h-dvh`, upstream's mobile-browser
+fix) and the `height:100%` chain BOTH collapse → the whole tree lays out
+into a zero-height strip → login card clipped → only the dark background
+paints = the black screen. The page renders fine in external browsers
+(document created by a properly-sized engine).
+
+### The fix (0.3.8-e2 (11)) — smallest correct, evidence-backed
+
+`LocalWebViewScreen` no longer calls `loadUrl()` in the factory. The load now
+happens on the FIRST REAL LAYOUT (OnLayoutChangeListener with width>0 &&
+height>0, then self-removes) with a 2 s fallback. Creating the document after
+the view has a real size avoids the latch — this is standard correct Android
+WebView practice, no upstream page changes, no contract changes, no
+diagnostic-only override.
+
+Also removed in this build: the `LAYER_TYPE_SOFTWARE` mitigation (A/B-proven
+ineffective — the raster path was never the cause); hardware rasterization is
+restored. The `frontend-smoke-b` edge-to-edge A/B stage stays for comparison
+evidence (its earlier run-as path bug is fixed with absolute paths).
+
+### Acceptance keys for this build's CI + the Vivo retest
+
+| Check | Fixed expectation |
+| --- | --- |
+| `visual-state` | `vh100/dvh100/pct100` ≈ viewport height (> 700), html cssH > 0 |
+| `bitmap[before]` | distinctColors > 1 — the welcome card VISIBLE in the bitmap |
+| screen-frontend-open.png | login/workspace UI visible under the app top bar |
+| Vivo retest | the interface visibly renders and responds to touch (owner's decisive criterion) |
+| Regression guard | the paint suite itself (visual-state + bitmap assertions) stays in every future export |

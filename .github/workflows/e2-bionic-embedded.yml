@@ -716,7 +716,8 @@ jobs:
             # CONFIG B: the MainActivity skips enableEdgeToEdge() when this
             # marker exists (runtime diagnostic hook). The foreground-service
             # runtime is killed by force-stop, so the full start flow repeats.
-            adb shell run-as '"$PKG"' sh -c "echo off > files/e2-no-edge-to-edge"
+            adb shell run-as '"$PKG"' sh -c "echo off > /data/data/'"$PKG"'/files/e2-no-edge-to-edge"
+            [ "$(adb shell run-as '"$PKG"' sh -c 'test -f /data/data/'"$PKG"'/files/e2-no-edge-to-edge && echo present' | tr -d '\r')" = "present" ] || { echo "FAIL: marker not written (config B)"; exit 1; }
             adb shell am force-stop '"$PKG"' || true
             sleep 3
             adb shell am start -n '"$PKG"'/.MainActivity > /dev/null

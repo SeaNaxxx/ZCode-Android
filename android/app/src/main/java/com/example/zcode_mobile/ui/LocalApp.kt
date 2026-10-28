@@ -384,17 +384,12 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
-                    // Device failure 3 root-cause class (evidence, not guess):
-                    // run 40627330416 shows the DOM fully populated (dom-state
-                    // rootChildren=1, rootHtmlLen=15007, bodyText="Welcome to
-                    // ZCode...") while the screen stays black on BOTH the API 33
-                    // AVD and the Vivo — page background paints, content layers
-                    // do not. That is the hardware compositing/raster path.
-                    // Mitigation under test: force CPU rasterization for this
-                    // WebView. Revisit if upstream CSS compositing is fixed.
-                    setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
-                    WebDiagnostics.log("webview", "raster: SOFTWARE (content-not-painted mitigation, evidence-backed)")
-                    WebDiagnostics.log("webview", "created; will load $url")
+                    // NOTE: the earlier LAYER_TYPE_SOFTWARE mitigation is REMOVED:
+                    // the A/B (run 40637657592) already showed it does not help,
+                    // and the proven root cause (failure-3, 0.3.7-e2 evidence) is
+                    // the pre-layout viewport latch, not the raster path. Default
+                    // hardware rasterization is restored.
+                    WebDiagnostics.log("webview", "raster: default hardware (SOFTWARE mitigation removed: did not address the proven cause)")
                     WebDiagnostics.log("webview", "default UA: ${settings.userAgentString}")
                     WebDiagnostics.log("webview", "provider: ${WebDiagnostics.webViewProviderInfo(ctx)}")
                     webViewClient = object : WebViewClient() {
@@ -479,7 +474,51 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                             }
                         }
                     }
-                    loadUrl(url)
+                    var started = false
+                    // DEVICE FAILURE 3 ROOT CAUSE + FIX (proven by the emulator
+                    // evidence chain, runs 40660693522 / 40665560040, 2026-10-28):
+                    // loadUrl() called in the FACTORY runs BEFORE the WebView is
+                    // attached and laid out — the document was created while the
+                    // view had NO size, and this WebView state latches the CSS
+                    // viewport-height resolution to 0 for the document's lifetime:
+                    // measured on the AVD — window.innerHeight 791, clientHeight
+                    // 791, visualViewport 791@1.0 — while 100vh/100dvh/100% ALL
+                    // resolve to 0 (probe elements), html/body/#root compute
+                    // height 0, the RootShell (upstream h-dvh) collapses, the
+                    // welcome card centers into a 48px strip at y=-168 and is
+                    // clipped; only the dark background paints = BLACK SCREEN.
+                    // Forcing 100vh inline did NOT repair it (bitmap[repaired]
+                    // unchanged) — the latch is document-level, so the fix is to
+                    // create the document AFTER the view has a real size.
+                    // FIX: load on FIRST real layout (with a 2s fallback), never
+                    // pre-layout. This is correct Android WebView practice in
+                    // general, not a diagnostic-only hack.
+                    addOnLayoutChangeListener(object : android.view.View.OnLayoutChangeListener {
+                        override fun onLayoutChange(
+                            v: android.view.View?, l: Int, t: Int, r: Int, b: Int,
+                            ol: Int, ot: Int, or2: Int, ob: Int,
+                        ) {
+                            val vw = v?.width ?: 0
+                            val vh = v?.height ?: 0
+                            if (vw > 0 && vh > 0 && !started) {
+                                started = true
+                                v?.removeOnLayoutChangeListener(this)
+                                WebDiagnostics.log(
+                                    "webview",
+                                    "first layout ${vw}x$vh -> loadUrl now (pre-layout viewport latch avoided: failure-3 fix)"
+                                )
+                                v?.loadUrl(url)
+                            }
+                        }
+                    })
+                    postDelayed({
+                        if (!started) {
+                            started = true
+                            WebDiagnostics.log("webview", "fallback load (no layout callback fired within 2s)")
+                            loadUrl(url)
+                        }
+                    }, 2_000)
+                    WebDiagnostics.log("webview", "created; will load $url on first layout (failure-3 fix)")
                 }
             }
         )
