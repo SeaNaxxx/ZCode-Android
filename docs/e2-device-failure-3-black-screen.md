@@ -204,3 +204,115 @@ version labels (0.3.5-e2, versionCode 8) — e2-rc2 artifacts are not touched
 | `visual-state vis:"hidden"` or `docHiddenAttrWas:true` | WebView visible-state bug → fix is attach/visibility handling, not rendering |
 | `bitmap[forced]` shows content | style-hidden content (opacity/visibility/animation stuck) — the walked node list names the culprit |
 | `hits` show an unexpected full-screen element at all 5 points | an overlay covers the UI — its selector is in the log |
+
+## Addendum 2 (2026-10-28, export 11:38:27): three SEPARATE faults identified and traced to source
+
+The 4th Vivo export (still 0.3.4-e2 (7)) adds decisive datapoints: the SAME
+device rendered the UI in an EXTERNAL browser, the app WebView DOM reached the
+FULL workspace UI (`rootHtmlLen 49585`, "Command palette / New task / Morning,
+how can I help?"), and a NEW failure appeared on send:
+`zcode-agent.sendConversationCommandV4 FAIL project.remote-project-required`
+(repeating, every 1–2 s, during draft-session creation — UI error surface:
+草稿会话创建失败，请重试).
+
+### Fault A — `project.remote-project-required`: upstream CONTRACT, not a port bug (traced to source)
+
+Full chain at upstream pin 3c5b2276:
+
+1. `packages/server/src/entry-http.ts` — the `--web` entry ALWAYS builds
+   services via `createServerHostServices({ sourceServerId: resolveHttpServerId() })`;
+   `projectStorageHostId = remoteHostIdFromWorkspaceIdentity(
+   buildServerRemoteWorkspaceIdentity({ serverId, workspacePath: "/" }))` → a
+   REMOTE owner host id (node.ts: "入口不得以 local owner 开放远端项目 RPC").
+2. `packages/services/src/project-storage/remote-policy.ts` —
+   `assertRemoteTaskDirectories(ownerHostId, project, …)`: returns silently
+   ONLY when `ownerHostId` is undefined/"local"; otherwise a NULL project
+   throws exactly `project.remote-project-required`.
+3. `packages/services/src/project-storage/project-repository.ts`
+   `reserveCreatedTask` → assert with `input.projectId ? requireProject(…): null`.
+4. `packages/services/src/zcode-agent/zcodeAgentService.ts`
+   `buildConversationCommandEnvelope` → `projectId: params.projectId ?? null`.
+   The device UI sent NO projectId (settings: `lastActiveWorkspace kind=local`,
+   `recentProjects: []` — no project registered server-side).
+5. `packages/services/src/project-storage/CONTRACT.md:32` — "远程创建必须有项目"
+   (remote creation MUST have a project; prepareSession / reserveCreatedTask /
+   moveTask must not produce unowned tasks). `prepareSession` without
+   projectId throws the same error for a remote owner (project/index.ts:211).
+
+Conclusion: on ANY standalone `--web` server (which is what E2 runs), the bare
+composer can NEVER create a session — this is the documented upstream
+contract, not a defect of the Android port. The supported fix path is the
+official project flow: **Projects pane → add project (server device) → select
+the workspace root → folder-trust confirm → saveProject → create the task
+from that project** (SessionPane then sends `projectId`, `reserveCreatedTask`
+passes: exactly one root == workspacePath, no additionalDirectories). No
+contract bypass, no fabricated remote project (owner constraint honored).
+`ProjectEditor.tsx`/`ProjectSidebarNode.tsx` implement this flow in the
+shared UI. The app now shows a one-line hint on the Running card; automation
+(pre-registering the workspace via the official saveProject RPC after server
+start) is a candidate NEXT step only after the manual flow is validated on
+the device.
+
+Proof the failure precedes any provider request: the stack ends in
+`reserveCreatedTask` inside `prepareSessionCreation` — the envelope never
+reaches the CLI/provider. This is consistent with the Winlator comparison:
+THERE the request reached OpenRouter and got a real provider error (402
+Insufficient credits) — a LATER stage on a host whose UI flow had a project.
+Fixing OpenRouter credits cannot fix Fault A; fixing Fault A will surface
+provider errors in OpenRouter's natural form.
+
+### Fault B — Node TLS `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` to zcode.z.ai: transient / network-path, NOT a bundle CA gap
+
+Evidence-backed classification:
+
+- api.z.ai and zcode.z.ai serve the IDENTICAL chain (leaf `*.z.ai` ←
+  `Sectigo Public Server Authentication CA DV R36` ← `Sectigo … Root R46` ←
+  `USERTrust RSA Certification Authority`) — verified from this environment
+  (`openssl s_client -showcerts`, Verify return code 0 for both).
+- The DEVICE's own probe verified `https://api.z.ai` OK (HTTP 301, tls=true)
+  at 11:19:30 using `LocalServerProbe` — which spawns node with the EXACT
+  same `applyBionicEnv` as the server (SSL_CERT_FILE/OPENSSL_CONF wired,
+  verification on). Same env + same chain + success ⇒ the bundled CA store
+  CAN verify this chain.
+- The Termux `ca-certificates` 1:2026.10.20 package (the bundle source)
+  contains BOTH `USERTrust RSA Certification Authority` and
+  `Sectigo Public Server Authentication Root R46` (checked from the actual
+  .deb, 118 certs).
+- Timeline in the same export: 11:19 probes OK → 11:21 BOTH external probes
+  TimeoutError (network flap) → 11:38 server fetch fails TLS-verify. The 11:38
+  failure is therefore classified as transient network-path behavior
+  (captive-portal/ISP interception or a leaf-only-serving edge) — pending the
+  on-device chain capture, NOT something "fixable" by weakening verification
+  (which remains forbidden).
+
+New instrumentation (0.3.6-e2): `probe-tls-chain` — connects with
+`rejectUnauthorized: true`; on failure it reads the SERVED chain
+(subject/issuer per depth) from the SAME failed socket (public metadata only,
+no keys/credentials) and logs `TLS-CHAIN` lines for `zcode.z.ai` +
+`api.z.ai` (control). Unit test pins verification-on + credential-free.
+
+### Fault C — WebView fetch 403 + CORS on zcode.z.ai/api/v1/client/configs: separate, functionally covered
+
+The WebView (system trust store, TLS fine) got a real HTTP 403 from the
+server and no ACAO header → browser-side fetch blocked by CORS policy.
+Reading: server-side rejection (WAF/origin/geo policy) of a browser-origin
+fetch to the client-configs endpoint; the CORS error only MASKS the 403.
+Functionally covered: the SERVER fetches the same config (provider-runtime
+"Builtin 远端更新失败，继续使用本地配置" falls back to local config), and the
+desktop host — the only caller upstream exercises — is not a browser. No
+permissive CORS workaround is added (owner constraint: establish the real
+server-side contract first). Existing `onReceivedHttpError` instrumentation
+already records status+URL for evidence. Priority: low; unrelated to the
+black screen and to Fault A.
+
+### Fault D (unchanged) — WebView black screen: WebView-paint-specific
+
+This export strengthens it: external browser renders the SAME server page;
+the app WebView DOM held the FULL workspace UI; screen stayed black. The
+0.3.5/0.3.6-e2 visual-state + bitmap suite (above) is the decisive
+instrument; the first emulator evidence set lands with CI run 40652320738
+(attempt 2) and the verdict comes from the Vivo retest.
+
+Release hygiene: release tags are now DERIVED from versionName
+(`e2-<versionName>`), so every future bump publishes to its own tag —
+e2-rc2/e2-rc3 history stays untouched.

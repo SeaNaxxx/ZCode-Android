@@ -59,6 +59,23 @@ class WebDiagnosticsTest {
     }
 
     @Test
+    fun `tls chain probe keeps verification on and stays credential-free`() {
+        val s = LocalServerProbe.TLS_PROBE_SCRIPT
+        // Verification must NEVER be disabled for the verdict connection.
+        assertTrue(s.contains("rejectUnauthorized: true"))
+        assertFalse(s.contains("rejectUnauthorized: false"))
+        assertFalse(s.contains("NODE_TLS_REJECT"))
+        // Metadata only, no credentials, bounded, argv targets.
+        assertFalse(s.contains("Authorization"))
+        assertFalse(s.contains("Bearer"))
+        assertFalse(s.contains("apikey"))
+        assertFalse(s.contains("cookie"))
+        assertTrue(s.contains("timeout: 8000"))
+        assertTrue(s.contains("TLS-CHAIN"))
+        assertTrue(s.contains("process.argv.slice(2)"))
+    }
+
+    @Test
     fun `persistence marker file name is workspace-relative dotfile`() {
         assertEquals(".e2-persistence.json", LocalServerProbe.PERSISTENCE_FILE)
     }

@@ -206,6 +206,18 @@ fun LocalApp(
                     onClick = { inWebView = true },
                     modifier = Modifier.fillMaxWidth()
                 ) { Text("Open ZCode") }
+                // Standalone-server contract (upstream project-storage CONTRACT.md):
+                // the --web entry runs with a remote ownerHostId, so task creation
+                // REQUIRES a registered project (project.remote-project-required
+                // otherwise — Vivo log 2026-10-28 11:38). The supported path is the
+                // official Projects flow; no contract bypass is implemented.
+                Text(
+                    "Before the first task: in the web UI open Projects and add this " +
+                        "workspace as a project, then start chats from that project. " +
+                        "A bare composer session fails with 草稿会话创建失败 on a server.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 OutlinedButton(onClick = {
                     ZcodeServer.stop()
                     LocalServerService.stop(context)

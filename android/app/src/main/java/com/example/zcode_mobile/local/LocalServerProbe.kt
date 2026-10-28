@@ -60,6 +60,68 @@ const targets = process.argv.slice(2);
 
     const val PERSISTENCE_FILE = ".e2-persistence.json"
 
+    /**
+     * TLS chain diagnostic (failure-4 protocol: classify UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+     * WITHOUT weakening verification). Device evidence 2026-10-28 11:19 vs 11:38:
+     * api.z.ai and zcode.z.ai serve the IDENTICAL chain (*.z.ai <- Sectigo DV R36 <-
+     * Sectigo Root R46 <- USERTrust RSA), and the probe verified it OK at 11:19:30
+     * with the SAME env the server uses - so the 11:38 server failure is NOT a
+     * bundle CA gap. This probe records, per target:
+     *   - the verification verdict with verification ON (rejectUnauthorized: true);
+     *   - on failure, the SERVED chain (subject/issuer per depth, read from the
+     *     same failed socket) so a leaf-only edge vs interception vs store gap
+     *     is decidable from the export.
+     * Metadata only: certificate subjects/issuers are public; no keys, no
+     * credentials, no application traffic ever uses the diagnostic result.
+     */
+    const val TLS_PROBE_SCRIPT = """// E2 TLS chain diagnostic - verification ON; on failure the served
+// chain is read from the SAME failed socket (public metadata only).
+const tls = require("node:tls");
+const targets = process.argv.slice(2);
+function describe(c, depth) {
+  const s = (c && c.subject && c.subject.CN) || "?";
+  const i = (c && c.issuer && c.issuer.CN) || "?";
+  return "depth" + depth + "[s=" + s + " i=" + i + "]";
+}
+function walk(c) {
+  const out = [];
+  let cur = c, d = 0;
+  while (cur && d < 6) {
+    out.push(describe(cur, d));
+    if (!cur.issuerCertificate || cur.issuerCertificate === cur) break;
+    cur = cur.issuerCertificate; d++;
+  }
+  return out;
+}
+(async () => {
+  for (const target of targets) {
+    let host = target;
+    try { host = new URL(target).hostname; } catch (e) {}
+    await new Promise((resolve) => {
+      const s = tls.connect({ host: host, port: 443, servername: host, rejectUnauthorized: true, timeout: 8000 });
+      const t0 = Date.now();
+      s.on("secureConnect", () => {
+        const chain = walk(s.getPeerCertificate(true));
+        console.log("TLS-CHAIN " + host + " -> VERIFIED in " + (Date.now() - t0) + "ms servedChain=" + chain.length);
+        chain.forEach((l) => console.log("TLS-CHAIN " + host + " " + l));
+        s.end(); resolve();
+      });
+      s.on("error", (e) => {
+        console.log("TLS-CHAIN " + host + " -> FAILED " + (e.code || e.message) + " after " + (Date.now() - t0) + "ms (verification was ON)");
+        try {
+          const chain = walk(s.getPeerCertificate(true));
+          chain.forEach((l) => console.log("TLS-CHAIN " + host + " served " + l));
+          if (!chain.length) console.log("TLS-CHAIN " + host + " served <no peer certificate available>");
+        } catch (e2) {
+          console.log("TLS-CHAIN " + host + " served <unreadable: " + e2.message + ">");
+        }
+        s.destroy(); resolve();
+      });
+      s.on("timeout", () => { s.destroy(); });
+    });
+  }
+})();"""
+
     suspend fun runAll(app: Context): Unit = withContext(Dispatchers.IO) {
         val a = app.applicationContext
         runCatching { probeLocal(a) }.onFailure {
@@ -67,6 +129,9 @@ const targets = process.argv.slice(2);
         }
         runCatching { probeExternal(a) }.onFailure {
             WebDiagnostics.log("probe", "external probe errored: ${it.message}")
+        }
+        runCatching { probeTlsChain(a) }.onFailure {
+            WebDiagnostics.log("probe", "tls-chain probe errored: ${it.message}")
         }
         runCatching { probePersistence(a) }.onFailure {
             WebDiagnostics.log("probe", "persistence probe errored: ${it.message}")
@@ -137,6 +202,38 @@ const targets = process.argv.slice(2);
             WebDiagnostics.log("probe", "external probe produced no RESULT lines (exit=$code) — runtime network stack unusable?")
         }
         WebDiagnostics.log("probe", "external probe done (no credentials sent; verification left enabled)")
+    }
+
+    /** TLS chain diagnostic: zcode.z.ai (failing host) + api.z.ai (control). */
+    private fun probeTlsChain(app: Context) {
+        val rt = RuntimePaths.runtimeDir(app)
+        val script = File(rt, "probe-tls-chain.cjs")
+        script.writeText(TLS_PROBE_SCRIPT)
+        val targets = listOf("https://zcode.z.ai", "https://api.z.ai")
+        val pb = ProcessBuilder(
+            listOf(
+                RuntimePaths.nodeBin(app).absolutePath,
+                script.absolutePath
+            ) + targets
+        )
+        pb.redirectErrorStream(true)
+        Provisioner.applyBionicEnv(pb.environment(), app)
+        val proc = pb.start()
+        Thread {
+            try {
+                proc.inputStream.bufferedReader().use { r ->
+                    while (true) {
+                        val line = r.readLine() ?: break
+                        if (line.startsWith("TLS-CHAIN")) WebDiagnostics.log("probe", "tls $line")
+                    }
+                }
+            } catch (_: Exception) {}
+        }.apply { isDaemon = true }.start()
+        val done = proc.waitFor(25, java.util.concurrent.TimeUnit.SECONDS)
+        if (!done) {
+            proc.destroyForcibly()
+            WebDiagnostics.log("probe", "tls-chain probe timed out after 25s (partial results above)")
+        }
     }
 
     /**

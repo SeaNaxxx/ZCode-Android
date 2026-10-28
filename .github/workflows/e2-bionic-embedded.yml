@@ -222,15 +222,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          TAG="e2-rc3"
+          # TAG DERIVED FROM versionName: every version bump gets its own release
+          # tag automatically — no silent asset overwrite with an ambiguous label
+          # (owner constraint). e2-rc2/e2-rc3 keep their historical artifacts.
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' android/app/build.gradle.kts)
+          TAG="e2-$VERSION"
+          echo "release tag: $TAG (from versionName $VERSION)"
           API="https://api.github.com/repos/${{ github.repository }}"
           AUTH="Authorization: Bearer $GH_TOKEN"
-          # NEW TAG for 0.3.5-e2 (8): the owner constraint forbids silently
-          # overwriting release assets while keeping an ambiguous version label.
-          # e2-rc2 keeps its historical 0.3.x artifacts untouched.
           REL_CODE=$(curl -s -o /tmp/rel.json -w '%{http_code}' -X POST "$API/releases" \
             -H "$AUTH" -H "Accept: application/vnd.github+json" \
-            -d "{\"tag_name\":\"$TAG\",\"target_commitish\":\"$GITHUB_SHA\",\"name\":\"E2 embedded Bionic APKs (rc3 — visual-state paint evidence suite)\",\"prerelease\":true,\"body\":\"Direct .apk downloads (no zip wrapper). arm64 = Vivo V2035 retest build (0.3.5-e2, versionCode 8): failure-3 visual-state evidence suite — visibilityState + computed-style/rect DOM walk from the LIVE DOM, WebView bitmap paint capture with pixel statistics, diagnostic-only force-visibility experiment (styles restored), isolated minimal-HTML paint test in the same WebView. x86_64 = AVD regression build.\"}")
+            -d "{\"tag_name\":\"$TAG\",\"target_commitish\":\"$GITHUB_SHA\",\"name\":\"E2 embedded Bionic APKs ($VERSION — visual-state paint evidence suite)\",\"prerelease\":true,\"body\":\"Direct .apk downloads (no zip wrapper). arm64 = Vivo V2035 retest build ($VERSION, versionCode from build.gradle.kts): failure-3 visual-state evidence suite — visibilityState + computed-style/rect DOM walk from the LIVE DOM, WebView bitmap paint capture with pixel statistics, diagnostic-only force-visibility experiment (styles restored), isolated minimal-HTML paint test in the same WebView, TLS chain diagnostic (verification ON). x86_64 = AVD regression build.\"}")
           if [ "$REL_CODE" != "201" ]; then
             echo "release create -> HTTP $REL_CODE (fetching existing)"
             RELEASE_ID=$(curl -s -H "$AUTH" "$API/releases/tags/$TAG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
