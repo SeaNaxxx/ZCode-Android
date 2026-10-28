@@ -331,6 +331,13 @@ jobs:
           }
           adb() { "$ANDROID_HOME/platform-tools/adb" "$@"; }
           ui_dump() {
+            # STALE-DUMP GUARD (run 40609670756): when uiautomator cannot dump
+            # (wedged SystemUI), the PREVIOUS dump must not be reused — every
+            # consumer grepped the old XML, dismissed the same stale "Wait"
+            # bounds forever, and dismiss_anr -> ui_tap_text -> dismiss_anr
+            # recursed in milliseconds. Delete before dumping; a failed dump
+            # now reads as "no information", never as stale truth.
+            rm -f "$LOGS_DIR/ui-dump.xml"
             adb shell uiautomator dump /sdcard/window_dump.xml > /dev/null 2>&1 || true
             adb pull /sdcard/window_dump.xml "$LOGS_DIR/ui-dump.xml" > /dev/null 2>&1 || true
             [ -f "$LOGS_DIR/ui-dump.xml" ]
@@ -378,11 +385,31 @@ jobs:
             return 1
           }
           dismiss_anr() {
+            # SINGLE ATTEMPT, NO RECURSION: this function is called from
+            # ui_tap_text's wait loop, so calling ui_tap_text back recursed
+            # (dismiss_anr -> ui_tap_text -> dismiss_anr -> ...) when dumps
+            # failed while a stale XML still matched. Tap straight from the
+            # current dump; fall back to the ENTER key; always return.
+            rm -f "$LOGS_DIR/ui-dump.xml"
             ui_dump || return 0
             grep -q "isn't responding" "$LOGS_DIR/ui-dump.xml" 2>/dev/null || return 0
-            echo "ANR dialog detected -> tapping Wait"
-            ui_tap_text "Wait" 15 || adb shell input keyevent KEYCODE_ENTER || true
-            sleep 3
+            echo "ANR dialog detected -> tapping Wait (single attempt)"
+            local c
+            c=$(python3 - "Wait" <<'PY'
+          import os, re, sys
+          p = os.path.join(os.environ["LOGS_DIR"], "ui-dump.xml")
+          try:
+              t = open(p, encoding="utf-8", errors="replace").read()
+          except OSError:
+              sys.exit(1)
+          m = re.findall(r'(?:text|content-desc)="[^"]*Wait[^"]*"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', t)
+          if not m:
+              sys.exit(1)
+          print((int(m[0][0]) + int(m[0][2])) // 2, (int(m[0][1]) + int(m[0][3])) // 2)
+          PY
+          ) || { adb shell input keyevent KEYCODE_ENTER || true; sleep 5; return 0; }
+            adb shell input tap $c || true
+            sleep 5
           }
           shot() { adb exec-out screencap -p > "$LOGS_DIR/screen-$1.png" 2>/dev/null || true; }
           # stage_run runs stages via `bash -c` child shells — functions must
