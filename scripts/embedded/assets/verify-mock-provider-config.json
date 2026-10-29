@@ -4,20 +4,24 @@
     "providerConfigRules": {
       "providerRules": [
         {
-          "providerId": "e1mock",
+          "providerId": "verify-mock",
           "enabled": true,
           "config": {
             "group": "standard-personal",
             "access": {
               "type": "api-key",
-              "apiKey": "e1-mock-key"
+              "apiKey": "verify-mock-key"
             },
             "api": {
               "type": "openai-chat-completions",
               "baseUrl": "http://127.0.0.1:9999/v1"
             },
-            "personalModelIds": ["mock-model"],
-            "modelOrder": ["mock-model"]
+            "personalModelIds": [
+              "mock-model"
+            ],
+            "modelOrder": [
+              "mock-model"
+            ]
           }
         }
       ]
@@ -25,7 +29,7 @@
     "modelConfigRules": {
       "providerModelRules": [
         {
-          "providerId": "e1mock",
+          "providerId": "verify-mock",
           "modelId": "mock-model",
           "config": {
             "enabled": true
@@ -35,9 +39,11 @@
       "manualProviderModelRules": []
     },
     "defaultModelSelection": {
-      "providerId": "e1mock",
+      "providerId": "verify-mock",
       "modelId": "mock-model",
-      "options": { "reasoningLevel": "disabled" }
+      "options": {
+        "reasoningLevel": "disabled"
+      }
     }
   }
 }

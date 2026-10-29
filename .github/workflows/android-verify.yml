@@ -1,32 +1,17 @@
-# E2 — embedded Bionic runtime APK + offline verification.
+# Embedded-runtime APK build + offline emulator verification.
 #
-# Decision context (owner, 2026-10-26): E0+E1 proved the Bionic path on the
-# x86_64 emulator (13/13, run 40263559737). E2 moves to the real-device gate:
-#   1. APK embeds Node.js + ZCode + ALL dependencies at build time — after
-#      install, first run must provision OFFLINE (airplane mode).
-#   2. ARM64 verification happens on the Vivo V2035 (this workflow's x86_64
-#      AVD results prove the app logic only, NEVER ARM64 hardware).
-#   3. The agent loop (Write/Bash/git) must be verified by effects on disk,
-#      not by app success messages.
+# 1. The APK embeds Node.js + ZCode + all dependencies at build time; first
+#    app run must provision OFFLINE.
+# 2. The x86_64 AVD proves app logic only; ARM64 verification happens on the
+#    acceptance device (see docs/ENGINEERING-NOTES.md section 4).
+# 3. The agent loop must be verified by effects on disk, not by app messages.
 #
-# REUSE: dist recipe = android-build.yml verbatim; bundle closure + symlink
-# rewrite = proven experiment/bionic-e0-e1 machinery; emulator pattern =
-# proven bionic-e0-e1.yml boot steps; agent loop = e1-driver/mock (adapted
-# on-device); classification = owner's five categories (no auto-PRoot).
-#
-# Independent branch: dev/main untouched.
+# Manual trigger only: emulator runs are expensive; start them deliberately.
 
-name: e2-bionic-embedded
+name: android-verify
 
 on:
   workflow_dispatch: {}
-  push:
-    branches:
-      - e2/bionic-arm64-embedded
-    paths:
-      - .github/workflows/e2-bionic-embedded.yml
-      - scripts/e2/**
-      - android/**
 
 permissions:
   contents: write   # prerelease publishing (direct .apk downloads, no zip wrapper)
@@ -41,18 +26,18 @@ env:
   # device with NoSuchMethodError. CI must never again be MORE capable than
   # the device in ways that mask app-API defects.
   SYSTEM_IMAGE: "system-images;android-33;google_apis;x86_64"
-  PKG: com.example.zcode_mobile
-  RT: /data/data/com.example.zcode_mobile/files/runtime
-  WS: /data/data/com.example.zcode_mobile/files/workspace
-  RESULTS_DIR: /tmp/e2-results
-  LOGS_DIR: /tmp/e2-logs
+  PKG: io.github.zcodeandroid.app
+  RT: /data/data/io.github.zcodeandroid.app/files/runtime
+  WS: /data/data/io.github.zcodeandroid.app/files/workspace
+  RESULTS_DIR: /tmp/verify-results
+  LOGS_DIR: /tmp/verify-logs
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
-      - name: Checkout E2 branch
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Record build context
@@ -134,14 +119,14 @@ jobs:
       - name: Build Bionic bundles (aarch64 + x86_64, sha256-verified closure)
         run: |
           set -e
-          python3 scripts/e2/build-bionic-bundle.py aarch64  /tmp/e2-bundle-work "$LOGS_DIR/bundle-out"
-          python3 scripts/e2/build-bionic-bundle.py x86_64 /tmp/e2-bundle-work "$LOGS_DIR/bundle-out"
+          python3 scripts/embedded/build-bionic-bundle.py aarch64  /tmp/bundle-work "$LOGS_DIR/bundle-out"
+          python3 scripts/embedded/build-bionic-bundle.py x86_64 /tmp/bundle-work "$LOGS_DIR/bundle-out"
           echo "--- bundle sizes ---"
           ls -la "$LOGS_DIR/bundle-out/"
           python3 - <<'PY'
           import json
           for a in ("aarch64", "x86_64"):
-              m = json.load(open(f"/tmp/e2-logs/bundle-out/manifest-{a}.json"))
+              m = json.load(open(f"/tmp/verify-logs/bundle-out/manifest-{a}.json"))
               print(f"[{a}] node={m['node']} packages={len(m['packages'])} "
                     f"audit={m['audit']['elfs_scanned']} ELFs, "
                     f"unsatisfied={m['audit']['unsatisfied_needed']} "
@@ -157,21 +142,21 @@ jobs:
           cp "$LOGS_DIR/bundle-out/prefix-aarch64.sha256" android/app/src/main/assets/runtime/bionic/prefix.sha256
           cp "$LOGS_DIR/bundle-out/prefix-aarch64.critical.txt" android/app/src/main/assets/runtime/bionic/prefix.critical.txt
           cp "$LOGS_DIR/bundle-out/manifest-aarch64.json" android/app/src/main/assets/runtime/bionic/manifest.json
-          cp scripts/e2/assets/e1-mock-server.cjs scripts/e2/assets/e1-driver.cjs \
-             scripts/e2/assets/e1-provider-config.json android/app/src/main/assets/runtime/bionic/
+          cp scripts/embedded/assets/verify-mock-provider.cjs scripts/embedded/assets/verify-agent-driver.cjs \
+             scripts/embedded/assets/verify-mock-provider-config.json android/app/src/main/assets/runtime/bionic/
           cp "${{ steps.dist.outputs.tarball }}" android/app/src/main/assets/runtime/zcode-dist.tgz
           echo "${{ steps.dist.outputs.sha256 }}" > android/app/src/main/assets/runtime/zcode-dist.sha256
           ls -la android/app/src/main/assets/runtime android/app/src/main/assets/runtime/bionic
           ( cd android && chmod +x gradlew && ./gradlew :app:assembleDebug --no-daemon --stacktrace ) \
             > "$LOGS_DIR/gradle-arm64.log" 2>&1 || { tail -n 250 "$LOGS_DIR/gradle-arm64.log"; exit 1; }
           APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
-          cp "$APK" "$LOGS_DIR/zcode-e2-arm64-debug.apk"
+          cp "$APK" "$LOGS_DIR/zcode-android-arm64-debug.apk"
           echo "arm64 APK: $(du -h "$APK" | cut -f1)"
 
       - name: Verify aarch64 APK contents
         run: |
           set -e
-          APK="$LOGS_DIR/zcode-e2-arm64-debug.apk"
+          APK="$LOGS_DIR/zcode-android-arm64-debug.apk"
           for entry in \
             assets/runtime/zcode-dist.tgz \
             assets/runtime/zcode-dist.sha256 \
@@ -179,9 +164,9 @@ jobs:
             assets/runtime/bionic/prefix.sha256 \
             assets/runtime/bionic/prefix.critical.txt \
             assets/runtime/bionic/manifest.json \
-            assets/runtime/bionic/e1-mock-server.cjs \
-            assets/runtime/bionic/e1-driver.cjs \
-            assets/runtime/bionic/e1-provider-config.json ; do
+            assets/runtime/bionic/verify-mock-provider.cjs \
+            assets/runtime/bionic/verify-agent-driver.cjs \
+            assets/runtime/bionic/verify-mock-provider-config.json ; do
             unzip -Z1 "$APK" | grep -qx "$entry" || { echo "FATAL: $entry missing from APK"; exit 1; }
           done
           echo "aarch64 APK content checks passed (all embedded entries present)"
@@ -196,26 +181,12 @@ jobs:
           ( cd android && chmod +x gradlew && ./gradlew clean :app:assembleDebug --no-daemon --stacktrace ) \
             > "$LOGS_DIR/gradle-x86_64.log" 2>&1 || { tail -n 250 "$LOGS_DIR/gradle-x86_64.log"; exit 1; }
           APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
-          cp "$APK" "$LOGS_DIR/zcode-e2-x86_64-debug.apk"
+          cp "$APK" "$LOGS_DIR/zcode-android-x86_64-debug.apk"
           unzip -Z1 "$APK" | grep -qx "assets/runtime/bionic/prefix.tgz" \
             || { echo "FATAL: x86_64 APK missing prefix bundle"; exit 1; }
           echo "x86_64 APK: $(du -h "$APK" | cut -f1)"
           echo "--- final APK sizes (compressed) ---"
-          ls -la "$LOGS_DIR"/zcode-e2-*.apk
-
-      - name: "Upload APK artifacts — SEPARATE per ABI (owner request: no combined zip)"
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2-apk-arm64
-          path: /tmp/e2-logs/zcode-e2-arm64-debug.apk
-          if-no-files-found: error
-
-      - name: Upload x86_64 APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2-apk-x86_64
-          path: /tmp/e2-logs/zcode-e2-x86_64-debug.apk
-          if-no-files-found: error
+          ls -la "$LOGS_DIR"/zcode-android-*.apk
 
       - name: Publish prerelease (direct .apk downloads, phone-friendly)
         env:
@@ -223,16 +194,15 @@ jobs:
         run: |
           set -e
           # TAG DERIVED FROM versionName: every version bump gets its own release
-          # tag automatically — no silent asset overwrite with an ambiguous label
-          # (owner constraint). e2-rc2/e2-rc3 keep their historical artifacts.
+          # tag automatically — no silent asset overwrite with an ambiguous label.
           VERSION=$(grep -oP 'versionName = "\K[^"]+' android/app/build.gradle.kts)
-          TAG="e2-$VERSION"
+          TAG="$VERSION"
           echo "release tag: $TAG (from versionName $VERSION)"
           API="https://api.github.com/repos/${{ github.repository }}"
           AUTH="Authorization: Bearer $GH_TOKEN"
           REL_CODE=$(curl -s -o /tmp/rel.json -w '%{http_code}' -X POST "$API/releases" \
             -H "$AUTH" -H "Accept: application/vnd.github+json" \
-            -d "{\"tag_name\":\"$TAG\",\"target_commitish\":\"$GITHUB_SHA\",\"name\":\"E2 embedded Bionic APKs ($VERSION — visual-state paint evidence suite)\",\"prerelease\":true,\"body\":\"Direct .apk downloads (no zip wrapper). arm64 = Vivo V2035 retest build ($VERSION, versionCode from build.gradle.kts): failure-3 visual-state evidence suite — visibilityState + computed-style/rect DOM walk from the LIVE DOM, WebView bitmap paint capture with pixel statistics, diagnostic-only force-visibility experiment (styles restored), isolated minimal-HTML paint test in the same WebView, TLS chain diagnostic (verification ON). x86_64 = AVD regression build.\"}")
+            -d "{\"tag_name\":\"$TAG\",\"target_commitish\":\"$GITHUB_SHA\",\"name\":\"ZCode-Android $VERSION\",\"prerelease\":true,\"body\":\"Android debug build (arm64). Installs the embedded runtime; first launch provisions offline. See docs/ENGINEERING-NOTES.md for the verification model.\"}")
           if [ "$REL_CODE" != "201" ]; then
             echo "release create -> HTTP $REL_CODE (fetching existing)"
             RELEASE_ID=$(curl -s -H "$AUTH" "$API/releases/tags/$TAG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
@@ -240,7 +210,7 @@ jobs:
             RELEASE_ID=$(python3 -c 'import json; print(json.load(open("/tmp/rel.json"))["id"])')
           fi
           echo "release id: $RELEASE_ID"
-          for APK in "$LOGS_DIR"/zcode-e2-*.apk; do
+          for APK in "$LOGS_DIR"/zcode-android-arm64-debug.apk; do
             NAME=$(basename "$APK")
             # delete stale asset with the same name (idempotent re-runs);
             # pass the name as argv — shell vars are NOT exported to python
@@ -271,13 +241,30 @@ jobs:
           done
           echo "release URL: https://github.com/${{ github.repository }}/releases/tag/$TAG"
 
-      - name: Upload build logs + bundle manifests
+      - name: "Upload APK artifacts — separate per ABI"
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: e2-build-logs
+          name: apk-arm64
+          path: /tmp/verify-logs/zcode-android-arm64-debug.apk
+          if-no-files-found: error
+
+      - name: Upload x86_64 APK artifact (emulator job input only, 1 day)
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-x86_64
+          path: /tmp/verify-logs/zcode-android-x86_64-debug.apk
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload build logs + bundle manifests
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
           path: |
-            /tmp/e2-logs/bundle-out/**
-            /tmp/e2-logs/build-context.txt
+            /tmp/verify-logs/bundle-out/**
+            /tmp/verify-logs/build-context.txt
           if-no-files-found: error
 
   verify-x86_64:
@@ -289,20 +276,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
-      - name: Checkout E2 branch (helper scripts)
+      - name: Checkout (helper scripts)
         uses: actions/checkout@v4
 
       - name: Download built APK
         uses: actions/download-artifact@v4
         with:
-          name: e2-apk-x86_64
-          path: /tmp/e2-apks
+          name: apk-x86_64
+          path: /tmp/apks
 
       - name: Prepare stage helpers + logs dirs
         run: |
-          mkdir -p "$RESULTS_DIR" "$LOGS_DIR" /tmp/e2-apks
-          ls -la /tmp/e2-apks
-          cat > /tmp/e2-stage-lib.sh <<'EOF'
+          mkdir -p "$RESULTS_DIR" "$LOGS_DIR" /tmp/apks
+          ls -la /tmp/apks
+          cat > /tmp/verify-stage-lib.sh <<'EOF'
           _emit_result() {
             python3 - "$RESULTS_DIR" "$1" "$2" "$3" "$4" <<'PY'
           import json, os, sys, datetime
@@ -424,7 +411,7 @@ jobs:
           # standalone helper (kept OUT of single-quoted bash -c blocks: a
           # quoted heredoc delimiter inside '...' terminates the outer string —
           # exact bug class of run 40630785519 / commit d1c1780)
-          cat > /tmp/e2-webview-bounds.py <<'PY'
+          cat > /tmp/verify-webview-bounds.py <<'PY'
           import os, re
           p = os.path.join(os.environ["LOGS_DIR"], "frontend-smoke-ui.xml")
           try:
@@ -435,8 +422,8 @@ jobs:
               b = re.search(r'bounds="(\[[^"]+\])"', m.group(0))
               print("WEBVIEW-BOUNDS:", b.group(1) if b else "?")
           PY
-          # env wrapper executed ON DEVICE under run-as (E2 layout, app prefix)
-          cat > /tmp/e2-run.sh <<EOF
+          # env wrapper executed ON DEVICE under run-as (embedded layout, app prefix)
+          cat > /tmp/verify-run.sh <<EOF
           #!/system/bin/sh
           PREFIX=$RT/usr
           export PREFIX
@@ -486,7 +473,7 @@ jobs:
 
       - name: emu-boot | boot AVD and enable root
         run: |
-          source /tmp/e2-stage-lib.sh
+          source /tmp/verify-stage-lib.sh
           export ANDROID_AVD_HOME="$HOME/.android/avd"
           export SYSTEM_IMAGE
           export SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -497,11 +484,11 @@ jobs:
             mkdir -p "$ANDROID_AVD_HOME"
             yes | "$SDKM" --licenses > /dev/null 2>&1 || true
             "$SDKM" --install "$SYSTEM_IMAGE" emulator platform-tools > "$LOGS_DIR/sdkmanager.log" 2>&1
-            echo no | "$AVDM" create avd -n e2x -k "$SYSTEM_IMAGE" -d pixel_5 --force > "$LOGS_DIR/avdmanager.log" 2>&1
+            echo no | "$AVDM" create avd -n avd33 -k "$SYSTEM_IMAGE" -d pixel_5 --force > "$LOGS_DIR/avdmanager.log" 2>&1
             # more CPU/RAM for the AVD: SystemUI ANRed under software rendering
             # on the runner in run #3 (classification = workflow/setup)
-            { echo "hw.cpu.ncore=4"; echo "hw.ramSize=6144"; } >> "$ANDROID_AVD_HOME/e2x.avd/config.ini"
-            nohup "$ANDROID_HOME/emulator/emulator" -avd e2x \
+            { echo "hw.cpu.ncore=4"; echo "hw.ramSize=6144"; } >> "$ANDROID_AVD_HOME/avd33.avd/config.ini"
+            nohup "$ANDROID_HOME/emulator/emulator" -avd avd33 \
               -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
               -gpu swiftshader_indirect -accel on -partition-size 4096 \
               -feature -Vulkan \
@@ -534,12 +521,12 @@ jobs:
             echo "HARD GATE: emulator boot failed — stopping"; exit 1
           fi
 
-      - name: install | install E2 APK (embedded assets only)
+      - name: install | install app APK (embedded assets)
         run: |
-          source /tmp/e2-stage-lib.sh
+          source /tmp/verify-stage-lib.sh
           stage_run install -- bash -c '
             set -e
-            APK=$(ls /tmp/e2-apks/zcode-e2-x86_64-debug.apk)
+            APK=$(ls /tmp/apks/zcode-android-x86_64-debug.apk)
             echo "installing: $APK ($(du -h "$APK" | cut -f1))"
             # NOTE: never redirect into $LOGS_DIR/install.log here — stage_run
             # already captures this whole script to that exact file (run #2:
@@ -567,7 +554,7 @@ jobs:
 
       - name: offline | cut all connectivity BEFORE first launch
         run: |
-          source /tmp/e2-stage-lib.sh
+          source /tmp/verify-stage-lib.sh
           stage_run offline -- bash -c '
             set -e
             adb shell cmd connectivity airplane-mode enable
@@ -584,7 +571,7 @@ jobs:
 
       - name: setup-tap | drive "Set up local runtime" offline
         run: |
-          source /tmp/e2-stage-lib.sh
+          source /tmp/verify-stage-lib.sh
           stage_run setup-tap -- bash -c '
             set -e
             sleep 10
@@ -613,25 +600,25 @@ jobs:
 
       - name: node-probe | embedded node really runs (device-side evidence)
         run: |
-          source /tmp/e2-stage-lib.sh
-          adb push /tmp/e2-run.sh /data/local/tmp/e2-run.sh > /dev/null
-          adb shell chmod 755 /data/local/tmp/e2-run.sh
+          source /tmp/verify-stage-lib.sh
+          adb push /tmp/verify-run.sh /data/local/tmp/verify-run.sh > /dev/null
+          adb shell chmod 755 /data/local/tmp/verify-run.sh
           # probe as a FILE: inline `node -e "...(...)"` gets mangled by adb
           # shell quoting (run #4: sh syntax error on parens) — workflow/setup
-          cat > /tmp/e2-probe.cjs <<'EOF'
+          cat > /tmp/verify-probe.cjs <<'EOF'
           console.log(JSON.stringify({node: process.version, platform: process.platform,
             arch: process.arch, execPath: process.execPath}));
           EOF
-          adb push /tmp/e2-probe.cjs /data/local/tmp/e2-probe.cjs > /dev/null
+          adb push /tmp/verify-probe.cjs /data/local/tmp/verify-probe.cjs > /dev/null
           stage_run node-probe -- bash -c '
             set -e
             echo "--- run-as wrapper: node --version ---"
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node --version
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node --version
             echo "--- run-as wrapper: platform/arch (probe file) ---"
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node /data/local/tmp/e2-probe.cjs
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-probe.cjs
             echo "--- run-as wrapper: git + bash ---"
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh git --version
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh bash --version | head -1
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh git --version
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh bash --version | head -1
           '
 
       - name: openssl-offline | OpenSSL init + verified TLS handshake, still offline
@@ -640,22 +627,22 @@ jobs:
           # initializes without accessing /data/data/com.termux/".
           # Full TLS handshake with verification on loopback — ZERO network,
           # so any success is download-free and Termux-free.
-          source /tmp/e2-stage-lib.sh
-          openssl req -x509 -newkey rsa:2048 -keyout /tmp/e2-tls-key.pem \
-            -out /tmp/e2-tls-cert.pem -days 2 -nodes -subj "/CN=localhost" \
+          source /tmp/verify-stage-lib.sh
+          openssl req -x509 -newkey rsa:2048 -keyout /tmp/verify-tls-key.pem \
+            -out /tmp/verify-tls-cert.pem -days 2 -nodes -subj "/CN=localhost" \
             > /dev/null 2>&1
-          adb push scripts/e2/assets/e2-tls-offline-probe.cjs /data/local/tmp/e2-tls-offline-probe.cjs > /dev/null
-          adb push /tmp/e2-tls-cert.pem /data/local/tmp/e2-tls-cert.pem > /dev/null
-          adb push /tmp/e2-tls-key.pem /data/local/tmp/e2-tls-key.pem > /dev/null
+          adb push scripts/embedded/assets/verify-tls-offline-probe.cjs /data/local/tmp/verify-tls-offline-probe.cjs > /dev/null
+          adb push /tmp/verify-tls-cert.pem /data/local/tmp/verify-tls-cert.pem > /dev/null
+          adb push /tmp/verify-tls-key.pem /data/local/tmp/verify-tls-key.pem > /dev/null
           stage_run openssl-offline -- bash -c '
             set -e
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node /data/local/tmp/e2-tls-offline-probe.cjs \
-              /data/local/tmp/e2-tls-cert.pem /data/local/tmp/e2-tls-key.pem
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-tls-offline-probe.cjs \
+              /data/local/tmp/verify-tls-cert.pem /data/local/tmp/verify-tls-key.pem
           '
 
       - name: start-tap | drive "Start ZCode" (embedded web server + mock provider)
         run: |
-          source /tmp/e2-stage-lib.sh
+          source /tmp/verify-stage-lib.sh
           stage_run start-tap -- bash -c '
             set -e
             ui_tap_text "Start ZCode" 120 || exit 1
@@ -676,7 +663,7 @@ jobs:
       - name: frontend-smoke | open WebView, capture console + DOM state (failure-3 evidence)
         continue-on-error: true
         run: |
-          source /tmp/e2-stage-lib.sh
+          source /tmp/verify-stage-lib.sh
           stage_run frontend-smoke -- bash -c '
             set -e
             adb logcat -c || true
@@ -687,7 +674,7 @@ jobs:
             ui_dump || true
             # preserve the dump of THIS stage (later stages overwrite ui-dump.xml)
             cp "$LOGS_DIR/ui-dump.xml" "$LOGS_DIR/frontend-smoke-ui.xml" 2>/dev/null || true
-            python3 /tmp/e2-webview-bounds.py || true
+            python3 /tmp/verify-webview-bounds.py || true
             if grep -q "android.webkit.WebView" "$LOGS_DIR/ui-dump.xml" 2>/dev/null; then
               echo "WebView node present in UI dump"
             else
@@ -710,14 +697,14 @@ jobs:
       - name: frontend-smoke-b | A/B with edge-to-edge OFF (failure-3 root-cause isolation)
         continue-on-error: true
         run: |
-          source /tmp/e2-stage-lib.sh
+          source /tmp/verify-stage-lib.sh
           stage_run frontend-smoke-b -- bash -c '
             set -e
             # CONFIG B: the MainActivity skips enableEdgeToEdge() when this
             # marker exists (runtime diagnostic hook). The foreground-service
             # runtime is killed by force-stop, so the full start flow repeats.
-            adb shell run-as '"$PKG"' sh -c "echo off > /data/data/$PKG/files/e2-no-edge-to-edge"
-            MARK=$(adb shell run-as '"$PKG"' ls /data/data/$PKG/files/e2-no-edge-to-edge | tr -d "\r")
+            adb shell run-as '"$PKG"' sh -c "echo off > /data/data/$PKG/files/config-edge-to-edge-off"
+            MARK=$(adb shell run-as '"$PKG"' ls /data/data/$PKG/files/config-edge-to-edge-off | tr -d "\r")
             [ -n "$MARK" ] || { echo "FAIL: marker not written (config B)"; exit 1; }
             adb shell am force-stop '"$PKG"' || true
             sleep 3
@@ -745,41 +732,41 @@ jobs:
             ui_tap_text "Status" 30 || adb shell input keyevent KEYCODE_BACK || true
           '
 
-      - name: e2-agent | ON-DEVICE agent loop with embedded mock (offline)
+      - name: agent-loop | ON-DEVICE agent loop with embedded mock (offline)
         run: |
-          source /tmp/e2-stage-lib.sh
-          adb push scripts/e2/assets/e1-driver.cjs /data/local/tmp/e1-driver.cjs > /dev/null
-          stage_run e2-agent -- bash -c '
+          source /tmp/verify-stage-lib.sh
+          adb push scripts/embedded/assets/verify-agent-driver.cjs /data/local/tmp/verify-agent-driver.cjs > /dev/null
+          stage_run agent-loop -- bash -c '
             set -e
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node /data/local/tmp/e1-driver.cjs \
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-agent-driver.cjs \
               --agent '"$RT"'/dist/zcode/agent/zcode.cjs --workspace '"$WS"' --timeout 240
           '
 
-      - name: e2-verify | agent effects on disk (not app messages)
+      - name: agent-effects | agent effects on disk (not app messages)
         run: |
-          source /tmp/e2-stage-lib.sh
-          stage_run e2-verify -- bash -c '
+          source /tmp/verify-stage-lib.sh
+          stage_run agent-effects -- bash -c '
             set -e
             echo "--- hello.txt (Write tool) ---"
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh cat '"$WS"'/hello.txt
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh cat '"$WS"'/hello.txt | grep -q "E1 mock write" || { echo "ASSERT FAIL: file write"; exit 1; }
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh cat '"$WS"'/hello.txt
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh cat '"$WS"'/hello.txt | grep -q "verify mock write" || { echo "ASSERT FAIL: file write"; exit 1; }
             echo "--- bash-marker.txt (Bash tool) ---"
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh cat '"$WS"'/bash-marker.txt
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh cat '"$WS"'/bash-marker.txt | grep -q "E1-BASH-OK" || { echo "ASSERT FAIL: bash marker"; exit 2; }
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh cat '"$WS"'/bash-marker.txt
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh cat '"$WS"'/bash-marker.txt | grep -q "VERIFY-BASH-OK" || { echo "ASSERT FAIL: bash marker"; exit 2; }
             echo "--- git commit (Bash tool) ---"
             # flat args only: `sh -c "cd $WS && git ..."` lost its quoting
             # through adb shell in run #5 (git ran un-wrapped) — workflow/setup
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh git -C $WS log -1 --format=%H%n%s
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh git -C $WS log -1 --format=%s | grep -q "E1-MOCK-COMMIT" || { echo "ASSERT FAIL: git commit"; exit 3; }
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh git -C $WS log -1 --format=%H%n%s
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh git -C $WS log -1 --format=%s | grep -q "VERIFY-MOCK-COMMIT" || { echo "ASSERT FAIL: git commit"; exit 3; }
             echo "--- mock request log (on-device, evidence) ---"
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh tail -6 $RT/mock.log || true
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh tail -6 $RT/mock.log || true
             echo "ALL AGENT EFFECTS VERIFIED ON DEVICE"
             shot agent-effects
           '
 
       - name: persistence | force-stop + relaunch (no re-provision, files survive)
         run: |
-          source /tmp/e2-stage-lib.sh
+          source /tmp/verify-stage-lib.sh
           stage_run persistence -- bash -c '
             set -e
             BEFORE=$(adb shell run-as '"$PKG"' sha256sum files/runtime/provision-complete.json | cut -d" " -f1)
@@ -807,10 +794,10 @@ jobs:
             AFTER=$(adb shell run-as '"$PKG"' sha256sum files/runtime/provision-complete.json | cut -d" " -f1)
             echo "marker sha after restart:  $AFTER"
             [ "$BEFORE" = "$AFTER" ] || { echo "FAIL: marker changed — re-provision happened"; exit 2; }
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh cat '"$WS"'/hello.txt | grep -q "E1 mock write" \
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh cat '"$WS"'/hello.txt | grep -q "verify mock write" \
               || { echo "FAIL: workspace files lost after restart"; exit 3; }
             echo "--- restart node exec again (same extracted runtime) ---"
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node --version
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node --version
             echo "PERSISTENCE OK: same marker, files intact, runtime reused (offline; no downloads possible)"
           '
 
@@ -820,8 +807,8 @@ jobs:
           # succeeds with certificate verification enabled". Network is
           # re-enabled HERE, after all offline criteria are proven, so the
           # offline guarantees above remain download-free.
-          source /tmp/e2-stage-lib.sh
-          adb push scripts/e2/assets/e2-tls-https-probe.cjs /data/local/tmp/e2-tls-https-probe.cjs > /dev/null
+          source /tmp/verify-stage-lib.sh
+          adb push scripts/embedded/assets/verify-tls-https-probe.cjs /data/local/tmp/verify-tls-https-probe.cjs > /dev/null
           stage_run net-restore -- bash -c '
             set -e
             # the offline stage disabled airplane-mode AND wifi AND data —
@@ -862,7 +849,7 @@ jobs:
           '
           stage_run tls-https -- bash -c '
             set -e
-            adb shell run-as '"$PKG"' sh /data/local/tmp/e2-run.sh node /data/local/tmp/e2-tls-https-probe.cjs https://api.github.com/zen
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-tls-https-probe.cjs https://api.github.com/zen
           '
 
       - name: report | classification summary (owner rules, no auto-PRoot)
@@ -872,7 +859,7 @@ jobs:
           import json, os, sys
           d = sys.argv[1]
           stages = ["install", "offline", "setup-tap", "node-probe", "openssl-offline", "start-tap",
-                    "frontend-smoke", "e2-agent", "e2-verify", "persistence", "net-restore", "tls-https", "emu-boot"]
+                    "frontend-smoke", "agent-loop", "agent-effects", "persistence", "net-restore", "tls-https", "emu-boot"]
           rows = []
           for s in stages:
               p = os.path.join(d, s + ".json")
@@ -887,8 +874,8 @@ jobs:
               "start-tap": "official ZCode --web + embedded mock on-device",
               "frontend-smoke": "black-screen evidence: WebView lifecycle + JS console + DOM state + visual-state/bitmap/force-vis/layout-repair/minimal-html paint suite (render verdict is evidence, not CI green)",
               "frontend-smoke-b": "edge-to-edge OFF A/B: isolates the WebView viewport-unit collapse trigger (runtime marker, force-stop + full restart)",
-              "e2-agent": "real agent loop end-to-end (mock model; auth/billing NOT exercised)",
-              "e2-verify": "agent effects verified on disk (criterion 3 mechanics)",
+              "agent-loop": "real agent loop end-to-end (mock model; auth/billing NOT exercised)",
+              "agent-effects": "agent effects verified on disk (criterion 3 mechanics)",
               "persistence": "restart survival, no re-provision (criterion 5 mechanics)",
               "net-restore": "test precondition for tls-https (not a device criterion)",
               "tls-https": "real HTTPS with certificate verification enabled (failure-2 acceptance; x86_64 AVD app-level evidence only)",
@@ -908,8 +895,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2-x86_64-verify-evidence
+          name: x86_64-verify-evidence
           path: |
-            /tmp/e2-logs/**
-            /tmp/e2-results/**
+            /tmp/verify-logs/**
+            /tmp/verify-results/**
           if-no-files-found: warn

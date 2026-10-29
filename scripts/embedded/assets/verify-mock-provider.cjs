@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// E1 mock model server: OpenAI-chat-completions compatible, scripted.
+// Offline mock model provider (verification kit): OpenAI-chat-completions, scripted.
 //
 // Drives the REAL ZCode agent loop without any external model service:
 //   request with no tool result yet        -> tool_call Write  (real file)
 //   result of call_1 (Write)               -> tool_call Bash   (real shell marker)
 //   result of call_2 (Bash echo)           -> tool_call Bash   (git init/commit)
-//   result of call_3 (Bash git)            -> final text with sentinel E1-MOCK-DONE
+//   result of call_3 (Bash git)            -> final text with sentinel VERIFY-MOCK-DONE
 //   any tool error or unknown tool_call id -> final text quoting the error, so the
 //                                             turn still ends and evidence lands
 //                                             in the protocol log (verify stage
@@ -14,7 +14,7 @@
 // Every request body is appended to the log file as JSON lines (evidence).
 // Base URL used by the agent: http://10.0.2.2:9999/v1 (emulator host alias).
 //
-// Usage: node e1-mock-server.cjs --port 9999 --log /tmp/e0e1-logs/e1-mock.log
+// Usage: node verify-mock-provider.cjs --port 9999 --log /tmp/verify-mock.log
 
 "use strict";
 
@@ -27,9 +27,9 @@ function arg(name, dflt) {
 }
 
 const PORT = Number(arg("port", 9999));
-const LOG = arg("log", "/tmp/e1-mock.log");
-const WS = arg("workspace", "/data/data/com.termux/files/home/e1-ws");
-const SENTINEL = "E1-MOCK-DONE";
+const LOG = arg("log", "/tmp/verify-mock.log");
+const WS = arg("workspace", "/tmp/verify-ws");
+const SENTINEL = "VERIFY-MOCK-DONE";
 
 const logStream = fs.createWriteStream(LOG, { flags: "a" });
 let reqCount = 0;
@@ -45,7 +45,7 @@ function sse(res, chunks, finish) {
     connection: "keep-alive",
   });
   let n = 0;
-  const id = "chatcmpl-e1-" + Date.now();
+  const id = "chatcmpl-verify-" + Date.now();
   const send = (data, fin) => {
     n += 1;
     const payload = {
@@ -105,19 +105,19 @@ function scriptedResponse(body) {
     logEvent({ req: reqCount, action: "write" });
     return { chunks: [toolCallChunk("call_1", "Write", {
       file_path: WS + "/hello.txt",
-      content: "E1 mock write: hello from Bionic\n",
+      content: "verify mock write: hello from Bionic\n",
     })], finish: "tool_calls" };
   }
   if (tid === "call_1") {
     logEvent({ req: reqCount, action: "bash-marker", toolResult: tcontent.slice(0, 200) });
     return { chunks: [toolCallChunk("call_2", "Bash", {
-      command: "echo E1-BASH-OK > " + WS + "/bash-marker.txt && cat " + WS + "/hello.txt",
+      command: "echo VERIFY-BASH-OK > " + WS + "/bash-marker.txt && cat " + WS + "/hello.txt",
     })], finish: "tool_calls" };
   }
   if (tid === "call_2") {
     logEvent({ req: reqCount, action: "bash-git", toolResult: tcontent.slice(0, 200) });
     return { chunks: [toolCallChunk("call_3", "Bash", {
-      command: "cd " + WS + " && git init -q && git add -A && git -c user.email=e1@mock -c user.name=E1 commit -q -m 'E1-MOCK-COMMIT' && git log --oneline | head -1",
+      command: "cd " + WS + " && git init -q && git add -A && git -c user.email=verify@localhost -c user.name=verify commit -q -m 'VERIFY-MOCK-COMMIT' && git log --oneline | head -1",
     })], finish: "tool_calls" };
   }
   if (tid === "call_3") {
@@ -168,7 +168,7 @@ const server = http.createServer((req, res) => {
         : { role: "assistant", content: text };
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({
-        id: "chatcmpl-e1-" + Date.now(),
+        id: "chatcmpl-verify-" + Date.now(),
         object: "chat.completion",
         created: Math.floor(Date.now() / 1000),
         model: "mock-model",
@@ -181,5 +181,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   logEvent({ event: "listening", port: PORT });
-  console.log(`[e1-mock] listening on :${PORT}, log=${LOG}`);
+  console.log(`[mock-provider] listening on :${PORT}, log=${LOG}`);
 });

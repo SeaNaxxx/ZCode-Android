@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// E1 protocol driver: runs INSIDE the emulator (Bionic node), spawns the real
+// Embedded verification driver: runs INSIDE the emulator (Bionic node), spawns the real
 // ZCode agent bundle (app-server --stdio) and drives one full agent turn:
 //
 //   runtime/capabilities -> session/create {workspace, mode:"yolo", model} ->
 //   session/send {sessionId, content} -> collect notification frames until the
 //   mock's final text sentinel appears (or timeout).
 //
-// E2 adaptation: runs ON-DEVICE (the same device the app runs on). The mock
+// On-device variant: runs ON-DEVICE (the same device the app runs on). The mock
 // model server also runs on-device (started by the app itself on 127.0.0.1:9999),
 // so the whole loop works offline. spawn uses process.execPath so the exact
 // same Bionic node that provisioned the runtime also runs the agent.
@@ -19,7 +19,7 @@
 //   3  protocol failure (capabilities/create/send error, or sentinel never seen)
 //   2  usage/spawn error
 //
-// Usage: node e1-driver.cjs --agent <zcode.cjs> --workspace <dir> --timeout 180
+// Usage: node verify-agent-driver.cjs --agent <zcode.cjs> --workspace <dir> --timeout 180
 //        [--preflight http://127.0.0.1:9999/healthz]
 
 "use strict";
@@ -39,12 +39,12 @@ function parseArgs(argv) {
     else if (a === "--preflight") o.preflight = argv[++i];
     else { console.error("unknown arg: " + a); process.exit(2); }
   }
-  if (!o.agent) { console.error("usage: node e1-driver.cjs --agent <zcode.cjs> [--workspace dir]"); process.exit(2); }
+  if (!o.agent) { console.error("usage: node verify-agent-driver.cjs --agent <zcode.cjs> [--workspace dir]"); process.exit(2); }
   return o;
 }
 
 const opts = parseArgs(process.argv.slice(2));
-const SENTINEL = "E1-MOCK-DONE";
+const SENTINEL = "VERIFY-MOCK-DONE";
 const child = spawn(process.execPath, [resolve(opts.agent), "app-server", "--stdio"], {
   cwd: resolve(opts.workspace),
   stdio: ["pipe", "pipe", "pipe"],
@@ -142,11 +142,11 @@ async function main() {
   const create = await request("session/create", {
     workspace: {
       workspacePath: resolve(opts.workspace),
-      workspaceKey: "e1-ws-key",
+      workspaceKey: "verify-ws-key",
     },
     mode: "yolo",
     model: {
-      providerId: "e1mock",
+      providerId: "verify-mock",
       modelId: "mock-model",
       options: { reasoningLevel: "disabled" },
     },
@@ -165,9 +165,9 @@ async function main() {
 
   const sendr = await request("session/send", {
     sessionId,
-    content: "Run the E1 mock task: create a file, run a shell marker, commit with git.",
+    content: "Run the mock verification task: create a file, run a shell marker, commit with git.",
     modelSelection: {
-      providerId: "e1mock",
+      providerId: "verify-mock",
       modelId: "mock-model",
       options: { reasoningLevel: "disabled" },
     },

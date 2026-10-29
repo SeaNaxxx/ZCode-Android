@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * E2 device-side OFFLINE OpenSSL/TLS evidence probe (failure 2 acceptance).
+ * Device-side OFFLINE OpenSSL/TLS evidence probe (failure 2 acceptance).
  *
  * Runs under the embedded Bionic node with airplane mode ON. Proves:
  *  1. OpenSSL initialized WITHOUT touching /data/data/com.termux (env audit);
@@ -19,7 +19,7 @@ const fs = require('fs');
 const tls = require('tls');
 
 const [, , certPath, keyPath] = process.argv;
-assert(certPath && keyPath, 'usage: e2-tls-offline-probe.cjs <cert.pem> <key.pem>');
+assert(certPath && keyPath, 'usage: verify-tls-offline-probe.cjs <cert.pem> <key.pem>');
 
 const conf = process.env.OPENSSL_CONF || '';
 const modules = process.env.OPENSSL_MODULES || '';

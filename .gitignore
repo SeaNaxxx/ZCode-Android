@@ -41,3 +41,7 @@ coverage/
 android/**/build/
 android/**/.gradle/
 android/local.properties
+
+# Python bytecode
+__pycache__/
+*.pyc

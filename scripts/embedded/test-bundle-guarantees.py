@@ -7,7 +7,7 @@ then asserts the G1/G2/G3 pipeline behaviors:
   - materialize_sonames: soname symlink -> real byte copy
   - openssl_gate: flags missing openssl.cnf/cert.pem
   - verify-tar tar scan: zero hardlink members; soname = regular member
-Run: python3 scripts/e2/test-bundle-guarantees.py
+Run: python3 scripts/embedded/test-bundle-guarantees.py
 """
 import importlib.util
 import os

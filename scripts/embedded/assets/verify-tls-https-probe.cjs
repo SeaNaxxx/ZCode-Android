@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * E2 device-side ONLINE HTTPS evidence probe (failure 2 acceptance criterion:
+ * Device-side ONLINE HTTPS evidence probe (failure 2 acceptance criterion:
  * "A real HTTPS request succeeds with certificate verification enabled").
  *
  * Runs under the embedded Bionic node with the network re-enabled. Proves:
@@ -33,7 +33,7 @@ assert(!process.env.NODE_TLS_REJECT_UNAUTHORIZED,
   'NODE_TLS_REJECT_UNAUTHORIZED must never be set');
 assert(tls.rootCertificates.length > 100, 'node root store unexpectedly small');
 
-https.get(url, { headers: { 'User-Agent': 'zcode-e2-tls-probe', Accept: '*/*' }, timeout: 25000 }, (res) => {
+https.get(url, { headers: { 'User-Agent': 'zcode-tls-probe', Accept: '*/*' }, timeout: 25000 }, (res) => {
   // Capture the socket NOW: by the 'end' event node may already have
   // detached it (res.socket === null — seen on the API 33 emulator run
   // 40612790771). The evidence must come from the live connection.

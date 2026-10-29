@@ -40,9 +40,9 @@ THIS BUILDER'S GUARANTEES (all verified against the DELIVERED tarball):
 
   Output tar root is `usr/` (Termux prefix layout). The app extracts it
   under <filesDir>/runtime/ so the prefix becomes
-  /data/data/com.example.zcode_mobile/files/runtime/usr.
+  /data/data/io.github.zcodeandroid.app/files/runtime/usr.
   Absolute Termux symlinks (/data/data/com.termux/files/usr/...) are
-  rewritten to relative (proven fix exp/e0-e1-bionic 761f225).
+  rewritten to relative (relative-path symlink closure; proven on-device).
   Prune man/doc/locale (+ npm if present) to keep the APK small.
 
 Usage: build-bionic-bundle.py <aarch64|x86_64> <workdir> <outdir>
@@ -72,7 +72,7 @@ SEEDS = [
     "termux-exec",
     "libandroid-support",
     # util-linux ships lsns (and friends) NEEDEDing libmount, but nothing in
-    # the Depends closure pulls it (first E2 audit finding) — seed it.
+    # the Depends closure pulls it (first bundle audit finding) — seed it.
     "libmount",
     "libblkid",
 ]
@@ -97,7 +97,7 @@ def fail(msg, code=2):
 
 
 def fetch(url, dest):
-    req = urllib.request.Request(url, headers={"User-Agent": "zcode-e2-bundle/0.2"})
+    req = urllib.request.Request(url, headers={"User-Agent": "zcode-bundle/0.2"})
     with urllib.request.urlopen(req, timeout=180) as r, open(dest, "wb") as f:
         while True:
             chunk = r.read(1 << 20)
