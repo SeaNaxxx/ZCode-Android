@@ -2,7 +2,7 @@
 
 | Component | Source | License | Use |
 | --- | --- | --- | --- |
-| Android app shell (`com.example.zcode_mobile` shell, remote-control client, theme, icons) | zai-org/ZCode `packages/android` @ commit `3c5b227649371507ddc4eb46ac5133afe6db1cab` | Apache-2.0 (upstream repo license) | Reused unmodified except: MainActivity mode switch, added `local/` package, added targetSdk change, added string resources |
+| Android app shell (upstream `com.example.zcode_mobile` shell re-identified as `io.github.zcodeandroid.app`, remote-control client, theme, icons) | zai-org/ZCode `packages/android` @ commit `3c5b227649371507ddc4eb46ac5133afe6db1cab` | Apache-2.0 (upstream repo license) | Reused unmodified except: MainActivity mode switch, added `local/` package, added targetSdk change, added string resources |
 | proot | Termux packages repo (`packages.termux.dev`, aarch64 deb, resolved at CI build time) | GPL-2.0+ | Executes the Linux ARM64 userland without root; binary shipped as `jniLibs/arm64-v8a/libproot.so` |
 | libtalloc | Termux packages repo (proot runtime dependency) | LGPL-3.0+ | proot dependency; shipped as `jniLibs/arm64-v8a/libtalloc.so` |
 | ZCode CLI distribution (`zcode-<v>.tar.gz`) | Built in CI from pinned zai-org/ZCode source (`pnpm build:zcode`) | Apache-2.0 | Embedded as `assets/runtime/zcode-dist.tar.gz`, sha256 verified on device before extraction |

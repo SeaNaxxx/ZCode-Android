@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.zcode_mobile"
+    namespace = "io.github.zcodeandroid.app"
     buildToolsVersion = "36.1.0"
     compileSdk {
         version = release(36) {
@@ -13,24 +13,22 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.zcode_mobile"
+        applicationId = "io.github.zcodeandroid.app"
         minSdk = 24
         // targetSdk 28 is deliberate: it keeps exec() of the downloaded/extracted
         // Linux userland (proot -> node) permitted on Android 10+ (W^X policy),
         // matching the Termux/proot-distro ecosystem. Revisit with a native
         // library-dir launch strategy if a higher targetSdk becomes required.
         targetSdk = 28
-        versionCode = 12
-        versionName = "0.3.9-e2"
+        versionCode = 14
+        versionName = "0.4.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
         buildConfigField("String", "REMOTE_CONTROL_DEFAULT_URL", "\"https://zcode.z.ai/remote\"")
     }
 
     buildTypes {
         debug {
-            manifestPlaceholders["usesCleartextTraffic"] = "true"
             buildConfigField("String", "REMOTE_CONTROL_DEFAULT_URL", "\"https://zcode.z.ai/remote\"")
         }
         release {
