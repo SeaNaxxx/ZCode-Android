@@ -1,59 +1,50 @@
-
 # ZCode Android
 
-An independent Android application project exploring how to run the original ZCode coding agent on Android.
+An Android application that runs the original ZCode coding agent entirely on
+the device: the agent, its web UI, and a Node.js 24 runtime are embedded in
+the APK and served locally on `127.0.0.1:3030`.
 
-## Project Goal
+## How it works
 
-Provide an Android application with a mobile interface, a local workspace, and access to the original ZCode agent, subject to runtime and dependency compatibility.
+- The official ZCode CLI distribution is built from pinned upstream source
+  (zai-org/ZCode) and embedded at build time together with a
+  Bionic-compatible Node.js runtime.
+- On first launch the app provisions the runtime offline from bundled assets,
+  then starts the agent's web mode through a foreground service that owns the
+  runtime lifecycle.
+- The web UI is displayed in a WebView; agent tasks run against a local
+  workspace in app-private storage.
 
-## Technical Approach
+## Verification requirements
 
-The project will evaluate the following options before committing to a runtime architecture:
+A successful build is not proof that the agent works on a device. The
+project tracks behavior in two separate classes:
 
-- Native Android application and local service.
-- Node.js ARM64 running directly on Android.
-- Node.js ARM64 inside a Linux ARM64 environment when required.
-- The original ZCode agent server protocol as a potential interface boundary.
-- FEX or other compatibility layers only if simpler approaches prove insufficient.
+- Emulator (x86_64 AVD): offline provisioning, local server startup, agent
+  loop verified by on-disk effects, restart persistence. Proves app logic
+  only.
+- Device (arm64): first-run offline provisioning, server reachability, real
+  agent tasks, real provider calls, UI rendering and touch. Device rows stay
+  NOT TESTED until executed on hardware.
 
-## Validation Requirements
+See [docs/ENGINEERING-NOTES.md](docs/ENGINEERING-NOTES.md) for the
+architecture reference, the verification model, and known failure classes.
 
-A successful Android build is not proof that the agent works on a device.
+## Building
 
-The following must be tested separately:
+CI is manual (`workflow_dispatch`) to keep resource usage intentional:
 
-1. Runtime and dependency compatibility on ARM64.
-2. Agent authentication with a supported model provider.
-3. Real file reads and writes inside the workspace.
-4. Execution of a real agent task.
-5. Communication between the Android interface and the local agent service.
-6. Process lifecycle, error handling, and recovery.
+- `android-verify` — full pipeline: distribution build, APK per ABI,
+  arm64 release artifact, emulator verification.
+- `linux-arm64-build` — linux/arm64 distribution tree for Termux checks.
+
+## Branching
+
+- `main` — stable, receives changes through reviewed PRs.
+- `dev` — active development; pull requests target `main`.
 
 ## Upstream
 
-Original project: https://github.com/zai-org/ZCode
-
-The upstream repository is a reference source. This repository is independent and is not a fork.
-
-## Docs
-
-- [docs/UPSTREAM-ANALYSIS.md](docs/UPSTREAM-ANALYSIS.md) — evidence-backed upstream source and distribution analysis (Phase 1, incl. §14 addendum: no official Linux ARM64 package exists; our CI builds it).
-- [docs/RUNTIME-CHECKS.md](docs/RUNTIME-CHECKS.md) — the three device gates before any Android code, with the execution protocol (all device rows NOT TESTED until executed).
-- [.github/workflows/linux-arm64-build.yml](.github/workflows/linux-arm64-build.yml) — manual CI build producing the linux/arm64 agent distribution tree and (experimental) desktop package used by the checks.
-- [device-checks/](device-checks/) — Termux check script and NDJSON protocol smoke client for running the checks on the phone.
-
-## Current Status
-
-First installable debug APK produced by CI (android-build workflow): Android shell
-reusing the official `packages/android` client (Apache-2.0) plus a local runtime that
-runs the ORIGINAL ZCode CLI distribution in web mode (`zcode --web`) inside a
-provisioned Linux ARM64 userland (proot + Ubuntu base + Node.js 24), shown in a WebView.
-
-CI build/packaging verified. Device execution is NOT TESTED yet.
-
-## Development
-
-The primary development environment is GitHub Actions, with Android device testing performed separately.
-
-No claim of successful end-to-end Android execution is made until device evidence is available.
+Original project: https://github.com/zai-org/ZCode (Apache-2.0). This
+repository is independent and is not a fork; upstream source is used at a
+pinned commit to build the embedded distribution.
