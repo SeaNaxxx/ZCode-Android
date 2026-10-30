@@ -302,7 +302,7 @@ jobs:
           vs_lines = [l for l in log.splitlines() if "[probe] visual-state" in l]
           if not vs_lines:
               print("FAIL: no visual-state probe evidence"); sys.exit(1)
-          m = re.search(r'visual-state: "(.*)"\s*$', vs_lines[-1])
+          m = re.search(r'visual-state[^:]*: "(.*)"\s*$', vs_lines[-1])
           if not m:
               print("FAIL: cannot parse visual-state line"); sys.exit(1)
           try:
