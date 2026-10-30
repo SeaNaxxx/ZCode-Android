@@ -8,7 +8,6 @@ import android.net.Uri
 import android.os.Build
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
-import android.webkit.WebChromeClient.FileChooserParams
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
@@ -596,7 +595,13 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                             return try {
                                 val intent = params.createIntent().apply {
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    if (params.mode == FileChooserParams.FILE_CHOOSER_MODE_MULTIPLE) {
+                                    // FileChooserParams' mode constants are API-21-stable
+                                    // (0 = open single, 1 = open multiple) but the K2
+                                    // toolchain against the compileSdk 36.1 stubs fails
+                                    // to resolve them (CI runs 41145908837/41146236029:
+                                    // Unresolved reference 'FILE_CHOOSER_MODE_MULTIPLE')
+                                    // — compare the documented value directly.
+                                    if (params.mode == 1) {
                                         putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true)
                                     }
                                 }
