@@ -291,9 +291,10 @@ object ZcodeServer {
                                 val line = r.readLine() ?: break
                                 RuntimeBus.append("register| $line")
                                 // logcat mirror: CI and the owner read evidence
-                                // from logcat, not from the in-memory log
+                                // from logcat. The script's own "[register] ..."
+                                // prefix is kept so CI greps match 1:1.
                                 runCatching {
-                                    android.util.Log.i("ZCodeWeb", "[register] $line")
+                                    android.util.Log.i("ZCodeWeb", line)
                                 }
                             }
                         }
