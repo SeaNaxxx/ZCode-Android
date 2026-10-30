@@ -143,7 +143,8 @@ jobs:
           cp "$LOGS_DIR/bundle-out/prefix-aarch64.critical.txt" android/app/src/main/assets/runtime/bionic/prefix.critical.txt
           cp "$LOGS_DIR/bundle-out/manifest-aarch64.json" android/app/src/main/assets/runtime/bionic/manifest.json
           cp scripts/embedded/assets/verify-mock-provider.cjs scripts/embedded/assets/verify-agent-driver.cjs \
-             scripts/embedded/assets/verify-mock-provider-config.json android/app/src/main/assets/runtime/bionic/
+             scripts/embedded/assets/verify-mock-provider-config.json \
+             scripts/embedded/assets/register-workspace-project.cjs android/app/src/main/assets/runtime/bionic/
           cp "${{ steps.dist.outputs.tarball }}" android/app/src/main/assets/runtime/zcode-dist.tgz
           echo "${{ steps.dist.outputs.sha256 }}" > android/app/src/main/assets/runtime/zcode-dist.sha256
           ls -la android/app/src/main/assets/runtime android/app/src/main/assets/runtime/bionic
@@ -166,7 +167,8 @@ jobs:
             assets/runtime/bionic/manifest.json \
             assets/runtime/bionic/verify-mock-provider.cjs \
             assets/runtime/bionic/verify-agent-driver.cjs \
-            assets/runtime/bionic/verify-mock-provider-config.json ; do
+            assets/runtime/bionic/verify-mock-provider-config.json \
+            assets/runtime/bionic/register-workspace-project.cjs ; do
             unzip -Z1 "$APK" | grep -qx "$entry" || { echo "FATAL: $entry missing from APK"; exit 1; }
           done
           echo "aarch64 APK content checks passed (all embedded entries present)"
@@ -289,6 +291,63 @@ jobs:
         run: |
           mkdir -p "$RESULTS_DIR" "$LOGS_DIR" /tmp/apks
           ls -la /tmp/apks
+          cat > /tmp/verify-render-verdict.py <<'EOF'
+          # HONEST RENDER VERDICT: green means the ZCode UI actually renders
+          # inside the WebView. Parses the failure-3 probe evidence from the
+          # stage logcat and fails when the owner-reported black screen is
+          # present (html/#root collapsed, card clipped, uniform bitmap).
+          import json, re, sys
+          log = open(sys.argv[1], errors="replace").read()
+          fails = []
+          vs_lines = [l for l in log.splitlines() if "[probe] visual-state" in l]
+          if not vs_lines:
+              print("FAIL: no visual-state probe evidence"); sys.exit(1)
+          m = re.search(r'visual-state: "(.*)"\s*$', vs_lines[-1])
+          if not m:
+              print("FAIL: cannot parse visual-state line"); sys.exit(1)
+          try:
+              d = json.loads(m.group(1).replace('\\"', '"'))
+          except Exception as e:
+              print("FAIL: visual-state JSON parse: " + str(e)); sys.exit(1)
+          inner = str(d.get("vp", {}).get("inner", "0x0"))
+          ih = int(inner.split("x")[1]) if "x" in inner else 0
+          if ih < 300: fails.append("JS viewport too small: inner=" + inner)
+          heights = d.get("heights", [])
+          def css_h(line):
+              m2 = re.search(r"cssH=(-?[0-9.]+)px", line or "")
+              return float(m2.group(1)) if m2 else -1.0
+          html_line = next((h for h in heights if h.startswith("html")), "")
+          root_line = next((h for h in heights if h.startswith("#root")), "")
+          html_h = css_h(html_line)
+          root_h = css_h(root_line)
+          if html_h <= 0: fails.append("html cssH=" + str(html_h) + " (viewport chain still collapsed)")
+          if root_h <= 0: fails.append("#root cssH=" + str(root_h))
+          nodes = d.get("nodes", [])
+          sec = next((n for n in nodes if n.startswith("section")), None)
+          if sec:
+              m3 = re.search(r"\[(-?\d+),(-?\d+) (\d+)x(\d+)\]", sec)
+              if m3:
+                  x, y, w, h = (int(g) for g in m3.groups())
+                  if y < 0: fails.append("welcome card clipped above viewport: y=" + str(y))
+                  elif y + h > ih + 60: fails.append("welcome card below viewport: y=" + str(y) + " h=" + str(h) + " inner=" + str(ih))
+                  else: print("welcome card visible: rect y=" + str(y) + " h=" + str(h))
+              else:
+                  fails.append("cannot parse section rect: " + sec[:80])
+          else:
+              fails.append("no section node in DOM walk (login card missing)")
+          bm = re.findall(r"bitmap\[before\]: .*?distinctColors=(\d+)", log)
+          if not bm:
+              fails.append("no bitmap[before] evidence")
+          else:
+              colors = int(bm[-1])
+              if colors < 2: fails.append("bitmap[before] uniform (distinctColors=" + str(colors) + ") = black screen")
+              else: print("bitmap[before] distinctColors=" + str(colors))
+          shim = re.findall(r"\[zcode-shim\] (.*)", log)
+          for line in shim[-4:]: print("shim: " + line)
+          for f in fails: print("FAIL: " + f)
+          if fails: sys.exit(1)
+          print("RENDER VERDICT: UI RENDERS (heights real, card visible, non-uniform bitmap)")
+          EOF
           cat > /tmp/verify-stage-lib.sh <<'EOF'
           _emit_result() {
             python3 - "$RESULTS_DIR" "$1" "$2" "$3" "$4" <<'PY'
@@ -656,12 +715,27 @@ jobs:
             shot running
             [ "$OK" = "1" ] || exit 1
             sleep 3
+            # PROJECT REGISTRATION (official saveProject RPC): upstream gives
+            # the standalone HTTP server a remote-style storage identity, so
+            # session creation (draft sessions) fails with
+            # project.remote-project-required until the workspace root is
+            # registered. The app registers it automatically after the server
+            # is healthy (register-workspace-project.cjs). A run whose app
+            # cannot register the workspace is NOT green — draft sessions
+            # would fail on the phone exactly as the owner reported.
+            REG=0
+            for i in $(seq 1 30); do
+              if adb logcat -d | grep -E "\\[register\\].*(VERIFIED|already registered)|project registration OK" >/dev/null 2>&1; then REG=1; break; fi
+              sleep 3
+            done
+            echo "--- project registration evidence (logcat [register] lines) ---"
+            adb logcat -d | grep "\[register\]" | tail -8 || true
+            if [ "$REG" = "1" ]; then echo "PROJECT REGISTRATION: VERIFIED on device"; else echo "FAIL: workspace never registered as project root"; exit 1; fi
             echo "--- app log (logcat tail, app tag) ---"
             adb logcat -d | grep -E "zcode|agent\||mock\|" | tail -25 || true
           '
 
-      - name: frontend-smoke | open WebView, capture console + DOM state (failure-3 evidence)
-        continue-on-error: true
+      - name: frontend-smoke | open WebView, capture console + DOM state + HONEST render verdict
         run: |
           source /tmp/verify-stage-lib.sh
           stage_run frontend-smoke -- bash -c '
@@ -690,12 +764,13 @@ jobs:
             echo "--- visual paint evidence (failure-3 suite: visual-state / bitmap / force-vis / layout-repair / minimal-html) ---"
             grep -E "visual-state|bitmap|force-vis|styles-restored|layout-repair|layout-restored|minimal-html|shot saved|config C|first layout|fallback load" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -45 || true
             grep -q "android.webkit.WebView" "$LOGS_DIR/ui-dump.xml" 2>/dev/null || { echo "FAIL: WebView absent - evidence could not be collected"; exit 1; }
-            echo "FRONTEND-SMOKE EVIDENCE COLLECTED (render verdict lives in bitmap + visual-state + console evidence)"
+            echo "--- HONEST RENDER VERDICT (green == the UI actually renders) ---"
+            python3 /tmp/verify-render-verdict.py "$LOGS_DIR/frontend-smoke-logcat.txt"
+            echo "FRONTEND-SMOKE: evidence collected AND render verdict PASSED"
             ui_tap_text "Status" 30 || adb shell input keyevent KEYCODE_BACK || true
           '
 
-      - name: frontend-smoke-b | A/B with edge-to-edge OFF (failure-3 root-cause isolation)
-        continue-on-error: true
+      - name: frontend-smoke-b | A/B with edge-to-edge OFF + HONEST render verdict
         run: |
           source /tmp/verify-stage-lib.sh
           stage_run frontend-smoke-b -- bash -c '
@@ -728,7 +803,9 @@ jobs:
             adb logcat -d > "$LOGS_DIR/frontend-smoke-b-logcat.txt" 2>/dev/null || true
             echo "--- CONFIG B (edge-to-edge OFF) visual paint evidence ---"
             grep -E "visual-state|bitmap|force-vis|layout-repair|minimal-html|edge-to-edge|first layout|config C" "$LOGS_DIR/frontend-smoke-b-logcat.txt" | tail -45 || true
-            echo "CONFIG-B EVIDENCE COLLECTED"
+            echo "--- CONFIG B HONEST RENDER VERDICT ---"
+            python3 /tmp/verify-render-verdict.py "$LOGS_DIR/frontend-smoke-b-logcat.txt"
+            echo "CONFIG-B: evidence collected AND render verdict PASSED"
             ui_tap_text "Status" 30 || adb shell input keyevent KEYCODE_BACK || true
           '
 
