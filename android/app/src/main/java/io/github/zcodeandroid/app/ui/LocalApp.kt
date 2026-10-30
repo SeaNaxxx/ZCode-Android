@@ -944,7 +944,9 @@ private const val VIEWPORT_SHIM_JS = """
     for (var i = 0; i < rules.length; i++){
       var r = rules[i];
       if (r.type === 1) { n += fixRule(r); }
-      else if (r.type === 4 || r.type === 7 || r.type === 12) {
+      // 4=media, 6=layer block (Tailwind v4 utilities live here),
+      // 7=keyframes, 12=supports, 13=container
+      else if (r.type === 4 || r.type === 6 || r.type === 7 || r.type === 12 || r.type === 13) {
         try { n += walk(r.cssRules); } catch (e) {}
       }
     }
