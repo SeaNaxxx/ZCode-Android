@@ -235,6 +235,12 @@ class ChannelClient {
 
   call(channel, command, arg, timeoutMs) {
     const id = this.nextId++;
+    // ProxyChannel convention (upstream packages/rpc/src/proxy-channel.ts):
+    // the wire body is the ARRAY of the method's positional arguments
+    // (client toService -> channel.call(name, methodArgs); server
+    // target.apply(handler, args || [])). A bare object would be spread as
+    // zero arguments -> saveProject(undefined) -> zod invalid_type.
+    const wireArg = arg === undefined ? [] : [arg];
     return new Promise((resolve, reject) => {
       const t = setTimeout(() => {
         this.pending.delete(id);
@@ -244,7 +250,7 @@ class ChannelClient {
         resolve: (v) => { clearTimeout(t); resolve(v); },
         reject: (e) => { clearTimeout(t); reject(e); },
       });
-      this.rawSend(serialize([100, id, channel, command]), arg);
+      this.rawSend(serialize([100, id, channel, command]), wireArg);
     });
   }
 
