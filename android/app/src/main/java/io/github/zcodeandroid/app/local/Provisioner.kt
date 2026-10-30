@@ -132,6 +132,24 @@ object Provisioner {
     }.getOrDefault(false)
 
     /**
+     * Ensure a single kit script exists in the staged kit dir, copying it from
+     * the APK assets when missing. Covers installs that provisioned with an
+     * older APK: kit files ship per-asset, so an app update can add a script
+     * without forcing a full re-provision. Returns the staged file or null.
+     */
+    fun ensureKitScript(ctx: Context, name: String): File? {
+        val kit = RuntimePaths.bionicKitDir(ctx)
+        val target = File(kit, name)
+        if (target.isFile) return target
+        if (!hasAsset(ctx, "runtime/bionic/$name")) return null
+        return runCatching {
+            kit.mkdirs()
+            copyAsset(ctx, "runtime/bionic/$name", target)
+            target
+        }.getOrNull()
+    }
+
+    /**
      * Fully offline provisioning from APK-embedded assets:
      *   1. verify + extract the Bionic prefix bundle (usr/bin/node, git, bash, libs)
      *   2. verify + extract the official ZCode distribution (dist/zcode/...)
@@ -255,7 +273,7 @@ object Provisioner {
         if (hasMockKit) {
             RuntimeBus.setState(RuntimeState.Provisioning("staging offline agent kit", 65))
             val kit = RuntimePaths.bionicKitDir(app).apply { mkdirs() }
-            for (n in listOf("verify-mock-provider.cjs", "verify-agent-driver.cjs", "verify-mock-provider-config.json")) {
+            for (n in listOf("verify-mock-provider.cjs", "verify-agent-driver.cjs", "verify-mock-provider-config.json", "register-workspace-project.cjs")) {
                 copyAsset(app, "runtime/bionic/$n", File(kit, n))
             }
         }

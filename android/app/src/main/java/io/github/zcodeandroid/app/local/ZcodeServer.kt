@@ -239,6 +239,7 @@ object ZcodeServer {
                         "GET $url health OK after ${(System.currentTimeMillis() - startedAt) / 1000}s"
                 )
                 RuntimeBus.setState(RuntimeState.Running(url))
+                registerWorkspaceProject(app)
                 return
             }
             throw IOException(
@@ -250,6 +251,71 @@ object ZcodeServer {
             RuntimeBus.append("start failed: ${t.message}")
             RuntimeBus.setState(RuntimeState.Failed("start", "${t.message}"))
         }
+    }
+
+    /**
+     * Register the workspace as a project on the running web server via the
+     * OFFICIAL project service RPC (channel "project" -> saveProject) — the
+     * same call the official Projects UI performs. Upstream design gives the
+     * standalone HTTP server a remote-style storage identity, so session
+     * creation (draft sessions) fails with "project.remote-project-required"
+     * until the workspace root is registered. Idempotent: the script checks
+     * readProjects first and no-ops when the root is already present.
+     * Runs on a worker thread; failure is logged loudly but never kills the
+     * server (the UI stays usable for non-session features).
+     */
+    private fun registerWorkspaceProject(app: Context) {
+        val script = Provisioner.ensureKitScript(app, "register-workspace-project.cjs")
+        if (script == null) {
+            RuntimeBus.append("project registration skipped: script not staged")
+            return
+        }
+        Thread {
+            try {
+                val command = listOf(
+                    RuntimePaths.nodeBin(app).absolutePath,
+                    script.absolutePath,
+                    "--url", RuntimePaths.SERVER_URL,
+                    "--workspace", RuntimePaths.workspace(app).absolutePath,
+                    "--dist", RuntimePaths.distWebEntry(app).absolutePath,
+                )
+                RuntimeBus.append("project registration: connecting to ${RuntimePaths.SERVER_URL}")
+                val pb = ProcessBuilder(command)
+                pb.redirectErrorStream(true)
+                Provisioner.applyBionicEnv(pb.environment(), app)
+                val proc = pb.start()
+                Thread {
+                    try {
+                        proc.inputStream.bufferedReader().use { r: BufferedReader ->
+                            while (true) {
+                                val line = r.readLine() ?: break
+                                RuntimeBus.append("register| $line")
+                                // logcat mirror: CI and the owner read evidence
+                                // from logcat, not from the in-memory log
+                                runCatching {
+                                    android.util.Log.i("ZCodeWeb", "[register] $line")
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }.apply { isDaemon = true }.start()
+                val exited = runCatching { proc.waitFor() }
+                if (exited.getOrDefault(-1) == 0) {
+                    WebDiagnostics.log(
+                        "probe",
+                        "project registration OK — workspace registered as project root " +
+                            "(draft sessions unblocked)"
+                    )
+                } else {
+                    RuntimeBus.append(
+                        "project registration FAILED (exit=${exited.getOrDefault(-1)}) — " +
+                            "draft sessions will fail until registered; see register| lines"
+                    )
+                }
+            } catch (t: Throwable) {
+                RuntimeBus.append("project registration error: ${t.message}")
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     /**

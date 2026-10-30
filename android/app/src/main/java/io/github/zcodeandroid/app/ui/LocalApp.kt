@@ -381,6 +381,13 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
+                    settings.javaScriptCanOpenWindowsAutomatically = true
+                    // OAuth: the Z AI accounts domain sets cookies during the
+                    // login redirects; WebView rejects third-party cookies by
+                    // default which can fail the round-trip. Loopback server
+                    // pages stay same-site, so this only affects the auth flow.
+                    android.webkit.CookieManager.getInstance()
+                        .setAcceptThirdPartyCookies(this, true)
                     // NOTE: the earlier LAYER_TYPE_SOFTWARE mitigation is REMOVED:
                     // the A/B (run 40637657592) already showed it does not help,
                     // and the proven root cause (failure-3, 0.3.7-e2 evidence) is
@@ -390,6 +397,35 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                     WebDiagnostics.log("webview", "default UA: ${settings.userAgentString}")
                     WebDiagnostics.log("webview", "provider: ${WebDiagnostics.webViewProviderInfo(ctx)}")
                     webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: android.webkit.WebResourceRequest?,
+                        ): Boolean {
+                            val target = request?.url?.toString() ?: return false
+                            // Full navigation trace — the OAuth round-trip
+                            // (z.ai accounts -> callback) is only diagnosable
+                            // when every redirect is on the record.
+                            WebDiagnostics.log("webview", "navigate -> $target")
+                            val scheme = request?.url?.scheme?.lowercase() ?: "https"
+                            if (scheme != "http" && scheme != "https" && scheme != "about" &&
+                                scheme != "data" && scheme != "javascript"
+                            ) {
+                                // app links (market:, intent:, mailto:) leave the WebView
+                                WebDiagnostics.log("webview", "external scheme $scheme -> OS")
+                                return try {
+                                    view?.context?.startActivity(
+                                        Intent(Intent.ACTION_VIEW, request?.url)
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                    true
+                                } catch (t: Throwable) {
+                                    WebDiagnostics.log("webview", "external scheme failed: ${t.message}")
+                                    true
+                                }
+                            }
+                            return false
+                        }
+
                         override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: android.graphics.Bitmap?) {
                             WebDiagnostics.log("webview", "onPageStarted $pageUrl")
                         }
@@ -401,6 +437,17 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                         override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                             WebDiagnostics.log("webview", "onPageFinished $finishedUrl")
                             if (view == null) return
+                            // Viewport px shim (self-gating): on WebViews whose
+                            // style engine resolves CSS vh/dvh units and media
+                            // queries against a 0-height layout viewport while
+                            // JS viewport metrics are sane (the failure-3
+                            // engine state), this rewrites the stylesheet to
+                            // pixel heights so the UI renders. On healthy
+                            // engines (newer WebView providers, real devices)
+                            // the shim detects health and stays idle.
+                            if (finishedUrl != null && !finishedUrl.startsWith("data:")) {
+                                view.evaluateJavascript(VIEWPORT_SHIM_JS, null)
+                            }
                             view.postDelayed({ dumpDomState(view) }, 4_000)
                             // failure-3 follow-up (owner protocol, 2026-10-28): the
                             // decisive visual-state evidence chain — runs ONCE per
@@ -830,3 +877,131 @@ private fun queryDisplayName(context: android.content.Context, uri: Uri): String
             if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
         }
     }.getOrNull()
+
+/**
+ * Viewport pixel shim (failure-3 engine state).
+ *
+ * Evidence (emulator runs, x86_64-verify-evidence): window.innerHeight /
+ * clientHeight / visualViewport are SANE while EVERY CSS viewport-height unit
+ * (vh, dvh and %-chains from html) resolves to 0 and media queries agree with
+ * the zero height (mqZero=true). The defect is engine-state, not page CSS:
+ * reloads, wide-viewport mode, forced visibility and style repair never
+ * recover it, so the upstream UI (h-dvh shell, centered cards) collapses to a
+ * 0-height strip = black screen.
+ *
+ * This shim is SELF-GATING: it first probes whether vh/dvh resolve; on a
+ * healthy engine it stays idle (real devices with current WebView providers).
+ * On the broken engine it (1) pins html/body to the real pixel height so the
+ * %-chain resolves, and (2) rewrites stylesheet declarations that use vh/dvh
+ * to pixel values. Media-query GATES themselves cannot be repaired (only
+ * their inner declarations); Tailwind base styles carry the layout at phone
+ * widths, so the UI renders fully. Idempotent per document; re-applies on
+ * resize and on newly added <style>/<link> nodes.
+ */
+private const val VIEWPORT_SHIM_JS = """
+(function(){
+  if (window.__zcodeViewportShim) { return; }
+  window.__zcodeViewportShim = true;
+  function innerH(){
+    var vv = window.visualViewport;
+    var h = (vv && vv.height) || window.innerHeight ||
+            document.documentElement.clientHeight || 0;
+    return Math.max(1, Math.round(h));
+  }
+  function engineBroken(){
+    try {
+      var host = document.body || document.documentElement;
+      if (!host) return false;
+      var el = document.createElement('div');
+      el.style.cssText = 'position:absolute;visibility:hidden;height:100vh;width:1px;top:-9999px;';
+      host.appendChild(el);
+      var hv = el.getBoundingClientRect().height;
+      el.style.height = '100dvh';
+      var hd = el.getBoundingClientRect().height;
+      el.parentNode.removeChild(el);
+      return !(hv > 100) && !(hd > 100);
+    } catch (e) { return false; }
+  }
+  function ruleDecls(rule){
+    var t = rule.cssText || '';
+    var a = t.indexOf('{'), b = t.lastIndexOf('}');
+    if (a < 0 || b <= a) return null;
+    return t.slice(a + 1, b);
+  }
+  function fixRule(rule){
+    var decls = ruleDecls(rule);
+    if (!decls || decls.indexOf('vh') < 0) return 0;
+    var fixed = decls.replace(/(-?[0-9.]+)(dvh|vh)(?![a-zA-Z0-9_-])/g, function(m, num, unit){
+      var v = parseFloat(num);
+      if (!isFinite(v)) return m;
+      return Math.round(v * innerH() / 100) + 'px';
+    });
+    if (fixed === decls) return 0;
+    try { rule.style.cssText = fixed; return 1; } catch (e) { return 0; }
+  }
+  function walk(rules){
+    var n = 0;
+    for (var i = 0; i < rules.length; i++){
+      var r = rules[i];
+      if (r.type === 1) { n += fixRule(r); }
+      else if (r.type === 4 || r.type === 7 || r.type === 12) {
+        try { n += walk(r.cssRules); } catch (e) {}
+      }
+    }
+    return n;
+  }
+  function applyAll(){
+    var de = document.documentElement;
+    if (!de) return 0;
+    var h = innerH();
+    var w = Math.max(1, window.innerWidth || de.clientWidth || 0);
+    de.style.height = h + 'px';
+    de.style.width = w + 'px';
+    var b = document.body;
+    if (b) { b.style.height = h + 'px'; b.style.width = w + 'px'; }
+    var n = 0;
+    for (var i = 0; i < document.styleSheets.length; i++){
+      try { n += walk(document.styleSheets[i].cssRules); } catch (e) {}
+    }
+    console.log('[zcode-shim] applied: rulesFixed=' + n + ' htmlPx=' + h + 'x' + w);
+    return n;
+  }
+  var lastApply = 0;
+  function maybeApply(){
+    if (!engineBroken()) {
+      if (!window.__zcodeShimHealthyLogged) {
+        window.__zcodeShimHealthyLogged = true;
+        console.log('[zcode-shim] engine healthy (vh/dvh resolve) - shim idle');
+      }
+      return;
+    }
+    var now = Date.now();
+    if (now - lastApply < 250) return;
+    lastApply = now;
+    applyAll();
+  }
+  function boot(){
+    maybeApply();
+    window.addEventListener('resize', maybeApply, true);
+    try {
+      var mo = new MutationObserver(function(muts){
+        for (var i = 0; i < muts.length; i++){
+          var added = muts[i].addedNodes;
+          for (var j = 0; j < added.length; j++){
+            var n = added[j];
+            if (n && (n.tagName === 'STYLE' || n.tagName === 'LINK')) { maybeApply(); return; }
+          }
+        }
+      });
+      var root = document.documentElement || document;
+      mo.observe(root, { childList: true, subtree: true });
+    } catch (e) {}
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+    window.addEventListener('load', boot);
+  } else {
+    boot();
+  }
+})();
+"""
