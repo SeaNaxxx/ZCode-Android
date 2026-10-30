@@ -30,6 +30,7 @@
 "use strict";
 
 const { createRequire } = require("module");
+const path = require("path");
 
 function parseArgs(argv) {
   const o = { url: "http://127.0.0.1:3030", workspace: null, dist: null, timeout: 60 };
@@ -58,7 +59,7 @@ try {
     console.error("[register] ws unavailable and --dist not provided: " + e.message);
     process.exit(2);
   }
-  const distRequire = createRequire(opts.dist);
+  const distRequire = createRequire(path.resolve(opts.dist));
   WebSocketImpl = distRequire("ws");
   console.log("[register] ws module: resolved from dist node_modules");
 }

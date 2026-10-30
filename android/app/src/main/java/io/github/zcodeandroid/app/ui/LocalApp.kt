@@ -922,14 +922,8 @@ private const val VIEWPORT_SHIM_JS = """
       return !(hv > 100) && !(hd > 100);
     } catch (e) { return false; }
   }
-  function ruleDecls(rule){
-    var t = rule.cssText || '';
-    var a = t.indexOf('{'), b = t.lastIndexOf('}');
-    if (a < 0 || b <= a) return null;
-    return t.slice(a + 1, b);
-  }
   function fixRule(rule){
-    var decls = ruleDecls(rule);
+    var decls = rule.style ? rule.style.cssText : null;
     if (!decls || decls.indexOf('vh') < 0) return 0;
     var fixed = decls.replace(/(-?[0-9.]+)(dvh|vh)(?![a-zA-Z0-9_-])/g, function(m, num, unit){
       var v = parseFloat(num);
@@ -943,12 +937,14 @@ private const val VIEWPORT_SHIM_JS = """
     var n = 0;
     for (var i = 0; i < rules.length; i++){
       var r = rules[i];
-      if (r.type === 1) { n += fixRule(r); }
-      // 4=media, 6=layer block (Tailwind v4 utilities live here),
-      // 7=keyframes, 12=supports, 13=container
-      else if (r.type === 4 || r.type === 6 || r.type === 7 || r.type === 12 || r.type === 13) {
-        try { n += walk(r.cssRules); } catch (e) {}
-      }
+      try {
+        // Type-agnostic: Chromium reports CSSLayerBlockRule.type as 0 (not 6),
+        // and Tailwind v4 wraps ALL utilities in @layer — type-number matching
+        // silently skips the whole layer (proven on the real UI: rulesFixed
+        // stuck at 1 with type matching, 63 with cssRules traversal).
+        if (r.style) { n += fixRule(r); }
+        if (r.cssRules) { n += walk(r.cssRules); }
+      } catch (e) {}
     }
     return n;
   }
