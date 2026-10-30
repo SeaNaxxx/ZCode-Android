@@ -132,6 +132,39 @@ object Provisioner {
     }.getOrDefault(false)
 
     /**
+     * Materialize the app-shipped CA bundle inside the runtime (self-healing,
+     * idempotent, cheap enough to call before every process spawn): copies the
+     * APK asset over the runtime copy whenever the bytes differ. A device that
+     * provisioned with an OLDER APK keeps its runtime dir across updates, so
+     * this is how a build-current Mozilla store reaches already-provisioned
+     * phones without a re-provision. Returns the runtime file, or null when
+     * the APK embeds no bundle (legacy proot installs).
+     */
+    fun ensureCaBundle(ctx: Context): File? {
+        if (!hasAsset(ctx, "runtime/bionic/cacert.pem")) return null
+        val target = File(RuntimePaths.usrDir(ctx), BionicEnv.CA_BUNDLE_REL)
+        return runCatching {
+            target.parentFile?.mkdirs()
+            val assetSha = ctx.assets.open("runtime/bionic/cacert.pem").use { input ->
+                val md = MessageDigest.getInstance("SHA-256")
+                val buf = ByteArray(1 shl 16)
+                var r: Int
+                while (input.read(buf).also { r = it } != -1) md.update(buf, 0, r)
+                md.digest().joinToString("") { "%02x".format(it) }
+            }
+            val currentSha = if (target.isFile) sha256(target) else null
+            if (currentSha != assetSha) {
+                copyAsset(ctx, "runtime/bionic/cacert.pem", target)
+                RuntimeBus.append(
+                    "ca bundle materialized at ${target.absolutePath} " +
+                        "(was ${if (currentSha == null) "absent" else "stale"})"
+                )
+            }
+            target
+        }.getOrNull()
+    }
+
+    /**
      * Ensure a single kit script exists in the staged kit dir, copying it from
      * the APK assets when missing. Covers installs that provisioned with an
      * older APK: kit files ship per-asset, so an app update can add a script
@@ -247,10 +280,12 @@ object Provisioner {
         if (!cnf.isFile || !cnf.canRead()) {
             throw IOException("openssl.cnf missing and fallback could not be written at ${cnf.absolutePath}")
         }
+        val caBundle = ensureCaBundle(app)
         RuntimeBus.append(
             "openssl config: ${cnf.absolutePath} " +
                 (if (cnf.length() == BionicEnv.FALLBACK_OPENSSL_CNF.length.toLong()) "(fallback)" else "(bundled)") +
                 ", cert.pem=" + File(usr, BionicEnv.CERT_PEM_REL).isFile +
+                ", ca-bundle=" + (caBundle?.isFile ?: false) +
                 ", ossl-modules=" + File(usr, BionicEnv.OSSL_MODULES_REL).isDirectory
         )
 
@@ -355,6 +390,7 @@ object Provisioner {
             home = RuntimePaths.homeDir(app),
             dataDir = RuntimePaths.dataDir(app),
             bashBin = RuntimePaths.bashBin(app),
+            caBundle = ensureCaBundle(app),
         )
     }
 

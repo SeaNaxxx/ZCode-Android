@@ -55,7 +55,7 @@ class BionicEnvTest {
         return usr
     }
 
-    private fun apply(usr: File): MutableMap<String, String> {
+    private fun apply(usr: File, caBundle: File? = null): MutableMap<String, String> {
         val env = mutableMapOf<String, String>()
         BionicEnv.apply(
             env,
@@ -63,6 +63,7 @@ class BionicEnvTest {
             home = File(usr.parentFile!!, "home"),
             dataDir = File(usr.parentFile!!, "zcode-data"),
             bashBin = File(usr, "bin/bash"),
+            caBundle = caBundle,
         )
         return env
     }
@@ -124,6 +125,37 @@ class BionicEnvTest {
         assertFalse(env.containsKey("NODE_TLS_REJECT_UNAUTHORIZED"))
         // The CA file, when set, must be a real non-empty certificate store.
         env["SSL_CERT_FILE"]?.let { assertTrue(File(it).length() > 0) }
+    }
+
+    @Test
+    fun `ca bundle supersedes deb store and wires node plus zcode agent trust`() {
+        val usr = makeUsr()
+        val bundle = File(usr, "etc/tls/cacert-zcode.pem")
+        bundle.parentFile?.mkdirs()
+        bundle.writeText("-----BEGIN CERTIFICATE-----\nFRESH-BUNDLE\n-----END CERTIFICATE-----\n")
+        val env = apply(usr, caBundle = bundle)
+        // SSL_CERT_FILE/GIT_SSL_CAINFO point at the FRESH bundle, not the deb's cert.pem
+        assertEquals(bundle.absolutePath, env["SSL_CERT_FILE"])
+        assertEquals(bundle.absolutePath, env["GIT_SSL_CAINFO"])
+        // node itself: extra roots appended in every store mode (never removes trust)
+        assertEquals(bundle.absolutePath, env["NODE_EXTRA_CA_CERTS"])
+        // the official dist's fetch client builds its https agent from this bundle
+        assertEquals(bundle.absolutePath, env["ZCODE_AGENT_CA_CERT"])
+        // verification is never weakened
+        assertFalse(env.containsKey("NODE_TLS_REJECT_UNAUTHORIZED"))
+    }
+
+    @Test
+    fun `missing or empty ca bundle falls back to the deb store without extra vars`() {
+        val usr = makeUsr()
+        val empty = File(usr, "etc/tls/empty.pem").apply { writeText("") }
+        val env = apply(usr, caBundle = empty)
+        assertEquals(File(usr, "etc/tls/cert.pem").absolutePath, env["SSL_CERT_FILE"])
+        assertFalse(env.containsKey("NODE_EXTRA_CA_CERTS"))
+        assertFalse(env.containsKey("ZCODE_AGENT_CA_CERT"))
+        val none = apply(usr, caBundle = null)
+        assertEquals(File(usr, "etc/tls/cert.pem").absolutePath, none["SSL_CERT_FILE"])
+        assertFalse(none.containsKey("NODE_EXTRA_CA_CERTS"))
     }
 
     @Test

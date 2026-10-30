@@ -1,10 +1,12 @@
 package io.github.zcodeandroid.app.ui
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
+import android.webkit.ValueCallback
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
@@ -15,11 +17,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -40,7 +45,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -363,16 +367,30 @@ private fun LogConsole(lines: List<String>) {
  */
 @Composable
 private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextButton(onClick = onExit) { Text("‹ Status") }
-            Spacer(Modifier.width(8.dp))
-            Text("ZCode — local", style = MaterialTheme.typography.titleSmall)
+    // Owner directive (2026-10-31): the "ZCode — local" status strip ate a
+    // slice of the interface — the official web UI must be FULL-SCREEN. Exit
+    // stays available through the system back gesture (BackHandler in
+    // LocalApp). Only the system status bar height is reserved, so the page
+    // never draws under the clock/battery.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.statusBars)
+    ) {
+        var filePathCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+        val chooserLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            val cb = filePathCallback
+            filePathCallback = null
+            if (cb == null) return@rememberLauncherForActivityResult
+            val parsed = runCatching {
+                android.webkit.WebChromeClient.FileChooserParams.parseResult(
+                    result.resultCode, result.data
+                )
+            }.getOrNull()
+            runCatching { cb.onReceiveValue(parsed ?: arrayOf()) }
+                .onFailure { WebDiagnostics.log("webview", "chooser callback failed: ${it.message}") }
         }
         AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -397,6 +415,12 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                     WebDiagnostics.log("webview", "default UA: ${settings.userAgentString}")
                     WebDiagnostics.log("webview", "provider: ${WebDiagnostics.webViewProviderInfo(ctx)}")
                     webViewClient = object : WebViewClient() {
+                        /** Loopback host = the embedded ZCode server itself. */
+                        fun isLoopback(u: android.net.Uri?): Boolean {
+                            val host = u?.host?.lowercase() ?: return false
+                            return host == "127.0.0.1" || host == "localhost" || host == "[::1]"
+                        }
+
                         override fun shouldOverrideUrlLoading(
                             view: WebView?,
                             request: android.webkit.WebResourceRequest?,
@@ -421,6 +445,32 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                                 } catch (t: Throwable) {
                                     WebDiagnostics.log("webview", "external scheme failed: ${t.message}")
                                     true
+                                }
+                            }
+                            // Non-loopback http(s) navigation (z.ai authorize
+                            // pages, docs links): hand to the EXTERNAL browser.
+                            // The OAuth state machine lives on the local server
+                            // (pending authorization + loopback callback), which
+                            // every app AND the browser can reach — the login
+                            // completes even when the authorize page is rendered
+                            // in Chrome. In-WebView, window.open to these hosts
+                            // was silently swallowed (no createWindow handler)
+                            // — the concrete "Login failed, please try again"
+                            // mechanism on the device.
+                            if (scheme == "http" || scheme == "https") {
+                                if (!isLoopback(request?.url)) {
+                                    WebDiagnostics.log("webview", "non-loopback http(s) -> external browser: $target")
+                                    return try {
+                                        view?.context?.startActivity(
+                                            Intent(Intent.ACTION_VIEW, request?.url)
+                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        )
+                                        true
+                                    } catch (t: Throwable) {
+                                        WebDiagnostics.log("webview", "external browser handoff failed: ${t.message}")
+                                        // Stay in the WebView rather than dead-ending.
+                                        false
+                                    }
                                 }
                             }
                             return false
@@ -449,15 +499,18 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                                 view.evaluateJavascript(VIEWPORT_SHIM_JS, null)
                             }
                             view.postDelayed({ dumpDomState(view) }, 4_000)
-                            // failure-3 follow-up (owner protocol, 2026-10-28): the
-                            // decisive visual-state evidence chain — runs ONCE per
-                            // WebView instance, never for the isolated data:-URL
-                            // paint test itself. Read-only probes + a diagnostic-only
-                            // force-visibility experiment + restore + isolated paint
-                            // test; every step leaves a timestamped evidence line.
+                            // Invisible render probe (owner directive 2026-10-31:
+                            // the visible diagnostic sequence — yellow force-vis
+                            // flash, red minimal-html page swap with the
+                            // VH=…/INNER=…/PCT=…/BUTTON text, double reload — was
+                            // removed now that the layout issue is fixed and
+                            // shipped). This keeps the CI-verdict evidence chain
+                            // (visual-state JSON + bitmap[before] pixel stats)
+                            // WITHOUT any visible hijack of the UI: the bitmap is
+                            // captured via view.draw() into memory, never shown.
                             if (!experimentRan && finishedUrl != null && !finishedUrl.startsWith("data:")) {
                                 experimentRan = true
-                                view.postDelayed({ runVisualEvidenceSequence(view, url) }, 5_200)
+                                view.postDelayed({ runRenderProbe(view) }, 5_200)
                             }
                         }
 
@@ -516,6 +569,99 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                             if (newProgress >= 100) {
                                 WebDiagnostics.log("webview", "onProgressChanged 100")
                             }
+                        }
+
+                        // File upload from the phone (owner report 2026-10-31:
+                        // the web UI's attach button did nothing). Without this
+                        // override the WebView silently swallows every
+                        // <input type=file> activation — the ZCode composer's
+                        // attach button could never open a picker. SAF handoff:
+                        // the system picker returns content:// URIs with read
+                        // grants; WebView streams them to the local server itself.
+                        override fun onShowFileChooser(
+                            webView: WebView?,
+                            callback: ValueCallback<Array<Uri>>,
+                            params: android.webkit.WebChromeClient.FileChooserParams,
+                        ): Boolean {
+                            WebDiagnostics.log(
+                                "webview",
+                                "file chooser requested (mode=${params.mode}, accept=${params.acceptTypes.joinToString(",")})"
+                            )
+                            // A previous chooser still pending: cancel it first
+                            // (the framework allows exactly one live callback).
+                            filePathCallback?.onReceiveValue(null)
+                            filePathCallback = callback
+                            return try {
+                                val intent = params.createIntent().apply {
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    if (params.mode ==
+                                        android.webkit.WebChromeClient.FileChooserParams.FILE_CHOOSER_MODE_MULTIPLE
+                                    ) {
+                                        putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true)
+                                    }
+                                }
+                                chooserLauncher.launch(intent)
+                                true
+                            } catch (e: ActivityNotFoundException) {
+                                WebDiagnostics.log("webview", "file chooser: no activity handles it: ${e.message}")
+                                filePathCallback = null
+                                false
+                            } catch (t: Throwable) {
+                                WebDiagnostics.log("webview", "file chooser launch failed: ${t.message}")
+                                filePathCallback = null
+                                false
+                            }
+                        }
+
+                        // window.open() handoff: the ZCode login flow opens the
+                        // z.ai authorize page via window.open. With no
+                        // createWindow handler WebView swallowed it silently —
+                        // the second half of the "Login failed, please try
+                        // again" mechanism (non-loopback navigations are
+                        // already handed to the external browser in
+                        // shouldOverrideUrlLoading; this covers the popup path).
+                        override fun onCreateWindow(
+                            view: WebView?,
+                            isDialog: Boolean,
+                            isUserGesture: Boolean,
+                            resultMsg: android.os.Message?,
+                        ): Boolean {
+                            val ctx = view?.context ?: return false
+                            fun openExternally(target: android.net.Uri): Boolean = try {
+                                ctx.startActivity(
+                                    Intent(Intent.ACTION_VIEW, target)
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                                WebDiagnostics.log("webview", "window.open -> external browser: $target")
+                                true
+                            } catch (t: Throwable) {
+                                WebDiagnostics.log("webview", "window.open external failed: ${t.message}")
+                                false
+                            }
+                            if (!isUserGesture) {
+                                WebDiagnostics.log("webview", "window.open blocked (no user gesture, dialog=$isDialog)")
+                                return false
+                            }
+                            // Extract the target URL via the classic
+                            // WebView transport mechanism.
+                            val transport = resultMsg?.obj as? android.webkit.WebView.WebViewTransport
+                            if (transport != null) {
+                                val temp = WebView(ctx)
+                                temp.webViewClient = object : WebViewClient() {
+                                    override fun shouldOverrideUrlLoading(
+                                        v: WebView?,
+                                        request: android.webkit.WebResourceRequest?,
+                                    ): Boolean {
+                                        val target = request?.url ?: return false
+                                        v?.destroy()
+                                        return openExternally(target)
+                                    }
+                                }
+                                transport.webView = temp
+                                resultMsg.sendToTarget()
+                                return true
+                            }
+                            return false
                         }
                     }
                     var started = false
@@ -598,40 +744,25 @@ private fun dumpDomState(view: WebView?) {
 
 /*
  * ============================================================================
- * failure-3 visual-state evidence suite (0.3.5-e2, owner protocol 2026-10-28)
+ * render evidence (failure-3 history, now invisible by design)
  * ============================================================================
- * Established device/AVD fact: DOM fully populated (rootChildren=1,
- * rootHtmlLen=15007, welcome text present), page background paints, content
- * pixels never appear, on BOTH raster paths (GPU + LAYER_TYPE_SOFTWARE).
+ * The debug suite that isolated the black-screen root cause ran VISIBLE
+ * experiments in the live WebView: a yellow force-visibility flash, a 100vh
+ * layout-repair flash, and the isolated minimal-html paint page (red
+ * background, on-screen "VH=… INNER=… PCT=…" report + BUTTON) swapped in
+ * over the real UI, followed by two reloads. That instrumentation served
+ * its purpose (root cause proven, px shim shipped, UI renders) and on a
+ * real phone showed up as the startup red flicker the owner reported
+ * (2026-10-31). Per the owner directive it is REMOVED.
  *
- * What was still missing — and what this suite captures, in one timestamped
- * chain, without inventing selectors (everything is read from the LIVE DOM):
- *
- *  1. visual-state — document.visibilityState/hidden (the WebView-visible
- *     state question, i.e. whether installDocumentHiddenMotionPause sees a
- *     hidden document), the data-document-hidden marker, computed
- *     display/visibility/opacity/color/background + getBoundingClientRect()
- *     for html, body, #root and the REAL top-3-level subtree (walked from the
- *     loaded DOM), elementFromPoint() at five viewport points, live animation
- *     list with play states, iframe count and shadow-root markers.
- *  2. bitmap[before] — the WebView's own painted output via view.draw():
- *     quantized pixel statistics + a PNG saved under files/logs/. This is the
- *     "did the renderer actually produce pixels" evidence, separable from a
- *     black SCREEN (occlusion above the WebView would leave the bitmap intact).
- *  3. force-vis (diagnostic-only) — inline-forces opacity/visibility/display
- *     on the walked subtree, removes data-document-hidden, and paints a bright
- *     #ffcc00 marker background on html/body; then bitmap[forced]. If pixels
- *     turn yellow but content stays missing, style restyling reaches the
- *     compositor and the content itself is the problem; if content appears,
- *     it was style-hidden (opacity/visibility/animation state) — the walk
- *     names the element. Original inline styles are restored afterwards.
- *  4. minimal-html — an isolated solid-background page with visible text and
- *     an interactive button loaded in the SAME WebView instance; bitmap[minimal]
- *     separates a general WebView paint failure from a ZCode-frontend-specific
- *     one. This is evidence only — never shipped as a UI replacement.
- *
- * Privacy: no storage/cookie/token access; the walk logs geometry + computed
- * style values only. PNG captures stay on-device (files/logs/).
+ * What stays — strictly invisible, and exactly what the CI render verdict
+ * asserts on:
+ *  1. visual-state — the read-only DOM/style/viewport-unit probe (JSON in
+ *     the log; it also records the probe values the flicker used to print,
+ *     so diagnostics lose nothing).
+ *  2. bitmap[before] — view.draw() into an in-memory bitmap + quantized
+ *     pixel statistics + PNG under files/logs/. The view is never replaced
+ *     or reloaded; nothing on screen changes.
  */
 private const val JS_VISUAL_STATE = """(function(){
   function dsc(el){ if(!el) return 'null'; var s = el.id ? '#'+el.id : el.tagName.toLowerCase(); var c = (el.getAttribute && el.getAttribute('class')) || ''; if (c) { var p = c.trim().split(/\s+/).slice(0,3).join('.'); if (p) s += '.' + p; } return s; }
@@ -668,88 +799,26 @@ private const val JS_VISUAL_STATE = """(function(){
   return JSON.stringify({ vis: document.visibilityState, hidden: document.hidden, focus: document.hasFocus(), docHiddenAttr: document.documentElement.hasAttribute('data-document-hidden'), bootTheme: document.documentElement.getAttribute('data-zcode-bootstrap-theme'), dark: document.documentElement.classList.contains('dark'), iframes: document.querySelectorAll('iframe').length, anims: anims, hits: hits, vp: vp, mq: mq, heights: heights, nodes: nodes });
 })()"""
 
-private const val JS_FORCE_VIS = """(function(){
-  var root = document.getElementById('root');
-  if (!root) return JSON.stringify({ error: 'no-root' });
-  var els = [document.documentElement, document.body, root];
-  (function collect(el, d){ if (!el || d > 3 || els.length > 40) return; var k = el.children || []; for (var i = 0; i < k.length && i < 8; i++) { els.push(k[i]); collect(k[i], d + 1); } })(root, 0);
-  var PROPS = ['opacity','visibility','display','transform','animation','transition','content-visibility','background'];
-  var saved = [];
-  els.forEach(function(el){ var before = {}; PROPS.forEach(function(p){ before[p] = el.style.getPropertyValue(p); }); saved.push(before); el.style.setProperty('opacity','1','important'); el.style.setProperty('visibility','visible','important'); if (getComputedStyle(el).display === 'none') el.style.setProperty('display','block','important'); el.style.setProperty('transform','none','important'); el.style.setProperty('animation','none','important'); el.style.setProperty('transition','none','important'); el.style.setProperty('content-visibility','visible','important'); });
-  var attrWas = document.documentElement.hasAttribute('data-document-hidden');
-  document.documentElement.removeAttribute('data-document-hidden');
-  document.documentElement.style.setProperty('background','#ffcc00','important');
-  document.body.style.setProperty('background','#ffcc00','important');
-  window.__e2restore = { els: els, saved: saved, props: PROPS };
-  return JSON.stringify({ forced: els.length, docHiddenAttrWas: attrWas, vis: document.visibilityState });
-})()"""
-
-private const val JS_RESTORE = """(function(){
-  var st = window.__e2restore;
-  if (!st) return JSON.stringify({ restored: 0 });
-  var n = 0;
-  st.els.forEach(function(el, i){ var before = st.saved[i] || {}; st.props.forEach(function(p){ if (before[p]) { el.style.setProperty(p, before[p]); } else { el.style.removeProperty(p); } }); n++; });
-  delete window.__e2restore;
-  return JSON.stringify({ restored: n });
-})()"""
-
-/**
- * Layout-repair experiment (failure-3 root-cause isolation, emulator evidence
- * 2026-10-28: html/body/#root collapse to 0 while innerHeight reports 912;
- * the RootShell root is div.relative.h-dvh = 100dvh). Forces the viewport-
- * height chain to 100vh inline on html/body/#root/wrapper, reports the
- * wrapper rect, captures bitmap[repaired] via the caller, then RESTORES the
- * original inline cssText. Diagnostic-only; the production CSS is untouched.
- * If the welcome card becomes visible in bitmap[repaired], the dvh/ICB
- * collapse is the demonstrated black-screen mechanism.
- */
-private const val JS_LAYOUT_REPAIR = """(function(){
-  var root = document.getElementById('root');
-  if (!root) return JSON.stringify({ error: 'no-root' });
-  var els = [document.documentElement, document.body, root];
-  if (root.firstElementChild) els.push(root.firstElementChild);
-  var saved = els.map(function(el){ return el.style.cssText; });
-  els.forEach(function(el){ el.style.setProperty('height','100vh','important'); el.style.setProperty('min-height','0','important'); });
-  var w = root.firstElementChild;
-  var r = w ? w.getBoundingClientRect() : null;
-  var main = w ? w.querySelector('main') : null;
-  var mr = main ? main.getBoundingClientRect() : null;
-  window.__e2layoutRestore = { els: els, saved: saved };
-  return JSON.stringify({ repaired: els.length, wrapperRect: r ? [Math.round(r.x),Math.round(r.y),Math.round(r.width),Math.round(r.height)] : null, mainRect: mr ? [Math.round(mr.x),Math.round(mr.y),Math.round(mr.width),Math.round(mr.height)] : null, vv: window.visualViewport ? Math.round(window.visualViewport.height) : null });
-})()"""
-
-private const val JS_LAYOUT_RESTORE = """(function(){
-  var st = window.__e2layoutRestore;
-  if (!st) return JSON.stringify({ restored: 0 });
-  st.els.forEach(function(el, i){ el.style.cssText = st.saved[i] || ''; });
-  delete window.__e2layoutRestore;
-  return JSON.stringify({ restored: st.els.length });
-})()"""
-
-/**
- * Isolated paint test per owner protocol — UPGRADED to be the DECISIVE
- * engine-vs-page discriminator: a 100vh div (green) + an on-screen report of
- * the measured vh/innerHeight/100% values so the bitmap itself carries the
- * verdict. Solid background + visible text + an interactive button kept.
- * Evidence only — never a UI replacement.
- */
-private const val MINIMAL_PAINT_HTML =
-    "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head>" +
-        "<body style=\"margin:0;background:#e11d48;height:100vh;\">" +
-        "<div id=\"vh\" style=\"position:absolute;top:0;left:0;width:100%;height:100vh;background:#00cc44;\"></div>" +
-        "<div style=\"position:absolute;top:0;left:0;background:#000;color:#0f0;font:700 30px monospace;padding:10px;z-index:10;\">MEASURING</div>" +
-        "<button id=\"e2t\" onclick=\"document.getElementById('e2t').textContent='TAPPED-OK'\" " +
-        "style=\"position:absolute;bottom:40px;left:24px;font:700 30px sans-serif;padding:26px 34px;\">BUTTON</button>" +
-        "<script>setTimeout(function(){var d=document.getElementById('vh').getBoundingClientRect().height;" +
-        "var p=document.createElement('div');p.style.cssText='position:absolute;height:100%;width:2px;visibility:hidden';" +
-        "document.body.appendChild(p);var pc=Math.round(p.getBoundingClientRect().height);p.remove();" +
-        "var q=document.querySelector('div[style*=\"z-index:10\"]');" +
-        "q.textContent='VH='+Math.round(d)+' INNER='+window.innerHeight+' PCT='+pc;},300);</script>" +
-        "</body></html>"
-
 private fun evaluateJs(view: WebView, script: String, onResult: (String) -> Unit) {
     runCatching { view.evaluateJavascript(script) { value -> onResult(value) } }
         .onFailure { WebDiagnostics.log("probe", "evaluateJavascript failed: ${it.message}") }
+}
+
+/**
+ * One-shot INVISIBLE evidence probe (UI thread via evaluateJavascript
+ * callbacks): visual-state -> bitmap[before]. Replaces the former visible
+ * evidence sequence (force-vis flash / layout-repair flash / minimal-html
+ * red page swap / double reload) which the owner reported as the startup
+ * red flicker; the underlying layout issue is fixed and shipped, so the
+ * visible experiments are gone while the CI-verdict evidence lines stay.
+ */
+private fun runRenderProbe(view: WebView) {
+    WebDiagnostics.log("probe", "render probe start (one-shot per WebView, invisible)")
+    evaluateJs(view, JS_VISUAL_STATE) { value ->
+        WebDiagnostics.log("probe", "visual-state: ${value.take(2400)}")
+        captureAndAnalyze(view, "before")
+        WebDiagnostics.log("probe", "render probe complete")
+    }
 }
 
 /**
@@ -794,79 +863,6 @@ private fun saveShotPng(view: WebView, bmp: Bitmap, label: String) {
     }.onFailure { WebDiagnostics.log("probe", "shot save failed: ${it.message}") }
 }
 
-/**
- * One-shot evidence chain (UI thread via evaluateJavascript callbacks and
- * view.postDelayed): visual-state -> bitmap[before] -> force-vis ->
- * bitmap[forced] -> restore -> minimal-html -> bitmap[minimal] -> reload.
- */
-private fun runVisualEvidenceSequence(view: WebView, originalUrl: String) {
-    WebDiagnostics.log("probe", "visual evidence sequence start (one-shot per WebView)")
-    evaluateJs(view, JS_VISUAL_STATE) { value ->
-        WebDiagnostics.log("probe", "visual-state: ${value.take(2400)}")
-        captureAndAnalyze(view, "before")
-        evaluateJs(view, JS_FORCE_VIS) { fv ->
-            WebDiagnostics.log("probe", "force-vis: ${fv.take(300)}")
-            view.postDelayed({
-                captureAndAnalyze(view, "forced")
-                evaluateJs(view, JS_RESTORE) { r ->
-                    WebDiagnostics.log("probe", "styles-restored: ${r.take(160)}")
-                    view.postDelayed({
-                        // layout-repair experiment: force the 100vh chain on the
-                        // collapsed root and capture — decisive for the dvh/ICB
-                        // collapse mechanism (emulator: wrapper h-dvh measured 0).
-                        evaluateJs(view, JS_LAYOUT_REPAIR) { lr ->
-                            WebDiagnostics.log("probe", "layout-repair: ${lr.take(400)}")
-                            view.postDelayed({
-                                captureAndAnalyze(view, "repaired")
-                                evaluateJs(view, JS_LAYOUT_RESTORE) { lr2 ->
-                                    WebDiagnostics.log("probe", "layout-restored: ${lr2.take(160)}")
-                                    view.postDelayed({
-                                        WebDiagnostics.log("probe", "minimal-html: loading isolated paint test in same WebView")
-                                        runCatching {
-                                            view.loadDataWithBaseURL(null, MINIMAL_PAINT_HTML, "text/html", "utf-8", null)
-                                        }.onFailure { WebDiagnostics.log("probe", "minimal-html load failed: ${it.message}") }
-                                        view.postDelayed({
-                                            captureAndAnalyze(view, "minimal")
-                                            view.postDelayed({
-                                                WebDiagnostics.log("probe", "minimal-html done; reloading original page")
-                                                view.loadUrl(originalUrl)
-                                                // RELOAD-RECOVERY probe: a fresh document
-                                                // created in the now fully-sized view —
-                                                // does the collapse clear? (probe-only;
-                                                // the mutation experiments stay one-shot)
-                                                view.postDelayed({
-                                                    evaluateJs(view, JS_VISUAL_STATE) { value ->
-                                                        WebDiagnostics.log("probe", "visual-state-reload: ${value.take(2400)}")
-                                                        // WIDE-VIEWPORT A/B (config C): the
-                                                        // wide viewport mode drives a
-                                                        // different layout-size path in
-                                                        // Chromium. Toggle + reload + probe.
-                                                        runCatching {
-                                                            view.settings.useWideViewPort = true
-                                                            view.settings.loadWithOverviewMode = true
-                                                        }.onFailure { WebDiagnostics.log("probe", "wide-viewport toggle failed: ${it.message}") }
-                                                        WebDiagnostics.log("probe", "config C: useWideViewPort=true + loadWithOverviewMode=true, reloading")
-                                                        view.reload()
-                                                        view.postDelayed({
-                                                            evaluateJs(view, JS_VISUAL_STATE) { value2 ->
-                                                                WebDiagnostics.log("probe", "visual-state-wide: ${value2.take(2400)}")
-                                                                WebDiagnostics.log("probe", "evidence sequence complete")
-                                                            }
-                                                        }, 8_000)
-                                                    }
-                                                }, 8_000)
-                                            }, 500)
-                                        }, 2_500)
-                                    }, 400)
-                                }
-                            }, 1_000)
-                        }
-                    }, 400)
-                }
-            }, 1_000)
-        }
-    }
-}
 
 private fun queryDisplayName(context: android.content.Context, uri: Uri): String? =
     runCatching {

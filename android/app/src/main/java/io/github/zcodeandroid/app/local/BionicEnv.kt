@@ -36,6 +36,16 @@ object BionicEnv {
     const val OSSL_MODULES_REL = "lib/ossl-modules"
 
     /**
+     * App-shipped, build-current Mozilla CA bundle (assets
+     * runtime/bionic/cacert.pem, materialized here). Supersedes the
+     * ca-certificates deb's cert.pem when present: a device provisioned by an
+     * OLDER APK keeps its original runtime directory across app updates, so
+     * its on-disk store can lag behind the chain a provider serves. The
+     * device MODEL_TLS_VALIDATION_FAILED report (2026-10-31) is the driver.
+     */
+    const val CA_BUNDLE_REL = "etc/tls/cacert-zcode.pem"
+
+    /**
      * Minimal fallback config written ONLY when the bundled openssl.cnf is
      * absent (e.g. a future bundle change drops the openssl package). It must
      * exist and be readable because an UNREADABLE OPENSSL_CONF target is
@@ -73,7 +83,12 @@ object BionicEnv {
     /**
      * Pure-filesystem env contract. The Context overload in Provisioner
      * delegates here with [RuntimePaths] values so JVM tests exercise the
-     * exact same code the device runs.
+     * exact same code the device runs. [caBundle] is the materialized
+     * app-shipped CA store (see [CA_BUNDLE_REL]); when present it supersedes
+     * the deb's cert.pem for every CA-aware variable and additionally drives
+     * NODE_EXTRA_CA_CERTS (Node appends these roots to whatever store mode it
+     * was built with) and ZCODE_AGENT_CA_CERT (the official dist's fetch
+     * client then builds its https agent from THIS bundle explicitly).
      */
     fun apply(
         env: MutableMap<String, String>,
@@ -81,6 +96,7 @@ object BionicEnv {
         home: File,
         dataDir: File,
         bashBin: File,
+        caBundle: File? = null,
     ) {
         env["PREFIX"] = usr.absolutePath
         env["HOME"] = home.absolutePath
@@ -111,10 +127,24 @@ object BionicEnv {
         // CA store: only ever a bundled, real certificate file/directory.
         // Node ships its own compiled-in root store; these variables exist so
         // OpenSSL-based children (git/libcurl) resolve CAs inside the runtime.
-        val cert = File(usr, CERT_PEM_REL)
-        if (cert.isFile) {
+        // The app-shipped bundle, when materialized, wins: it is refreshed per
+        // APK build, while a device provisioned months earlier keeps the deb
+        // it was installed with.
+        val bundle = caBundle?.takeIf { it.isFile && it.length() > 0 }
+        val cert = bundle ?: File(usr, CERT_PEM_REL).takeIf { it.isFile }
+        if (cert != null) {
             env["SSL_CERT_FILE"] = cert.absolutePath
             env["GIT_SSL_CAINFO"] = cert.absolutePath
+        }
+        if (bundle != null) {
+            // Belt and braces for the node process itself: NODE_EXTRA_CA_CERTS
+            // is honored by node core in every store mode (appends roots, never
+            // removes), and ZCODE_AGENT_CA_CERT makes the official dist's own
+            // fetch client trust exactly this bundle. Verification stays ON in
+            // both paths — this widens the trusted set with a full Mozilla
+            // store, it never weakens it.
+            env["NODE_EXTRA_CA_CERTS"] = bundle.absolutePath
+            env["ZCODE_AGENT_CA_CERT"] = bundle.absolutePath
         }
         val certsDir = File(usr, CERTS_DIR_REL)
         if (certsDir.isDirectory) {

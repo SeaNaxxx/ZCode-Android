@@ -239,6 +239,7 @@ object ZcodeServer {
                         "GET $url health OK after ${(System.currentTimeMillis() - startedAt) / 1000}s"
                 )
                 RuntimeBus.setState(RuntimeState.Running(url))
+                runTlsDiagnose(app)
                 registerWorkspaceProject(app)
                 return
             }
@@ -251,6 +252,59 @@ object ZcodeServer {
             RuntimeBus.append("start failed: ${t.message}")
             RuntimeBus.setState(RuntimeState.Failed("start", "${t.message}"))
         }
+    }
+
+    /**
+     * TLS self-diagnosis against the provider endpoint (owner requirement
+     * 2026-10-31): inspect the actual certificate chain, CA configuration,
+     * system time and the ORIGINAL TLS error on-device, with verification
+     * never disabled. The MODEL_TLS_VALIDATION_FAILED report (zai-api, GLM,
+     * 2026-10-31) carried no underlying openssl code — reason=unknown — so
+     * the exact failure was invisible on the device. This probe logs it:
+     * every line is prefixed "[tls]" (RuntimeBus + logcat mirror), so the
+     * next device run names the real cause (CA store / clock skew / MITM
+     * interception) instead of a guess. Diagnostic only: never fails the
+     * server start, never touches credentials.
+     */
+    private fun runTlsDiagnose(app: Context) {
+        val script = Provisioner.ensureKitScript(app, "tls-diagnose.cjs")
+        if (script == null) {
+            RuntimeBus.append("tls diagnose skipped: script not staged")
+            return
+        }
+        Thread {
+            try {
+                val command = listOf(
+                    RuntimePaths.nodeBin(app).absolutePath,
+                    script.absolutePath,
+                    "--url", "https://api.z.ai/"
+                )
+                RuntimeBus.append("tls diagnose: probing https://api.z.ai (no credentials involved)")
+                val pb = ProcessBuilder(command)
+                pb.redirectErrorStream(true)
+                Provisioner.applyBionicEnv(pb.environment(), app)
+                val proc = pb.start()
+                Thread {
+                    try {
+                        proc.inputStream.bufferedReader().use { r: BufferedReader ->
+                            while (true) {
+                                val line = r.readLine() ?: break
+                                RuntimeBus.append(line)
+                                runCatching { android.util.Log.i("ZCodeWeb", line) }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }.apply { isDaemon = true }.start()
+                val exited = runCatching { proc.waitFor() }
+                WebDiagnostics.log(
+                    "probe",
+                    "tls diagnose finished (exit=${exited.getOrDefault(-1)}); " +
+                        "marker line TLS-DIAGNOSE-OK/FAIL is in the log above"
+                )
+            } catch (t: Throwable) {
+                RuntimeBus.append("tls diagnose error: ${t.message}")
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     /**

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      Dark variant of the app theme, selected automatically when the base
+      context is night-qualified (MainActivity.attachBaseContext follows the
+      SYSTEM dark setting explicitly because the targetSdk-28 architecture
+      does not receive the system night mode on its own). Keeps the window
+      background dark and the status-bar content light so the app matches
+      the system-dark phone and the WebView reports prefers-color-scheme:dark
+      (which the official ZCode web UI follows for its own theme).
+    -->
+    <style name="Theme.Zcode" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/background_dark</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

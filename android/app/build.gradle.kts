@@ -20,8 +20,8 @@ android {
         // matching the Termux/proot-distro ecosystem. Revisit with a native
         // library-dir launch strategy if a higher targetSdk becomes required.
         targetSdk = 28
-        versionCode = 15
-        versionName = "0.4.2"
+        versionCode = 16
+        versionName = "0.4.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "REMOTE_CONTROL_DEFAULT_URL", "\"https://zcode.z.ai/remote\"")

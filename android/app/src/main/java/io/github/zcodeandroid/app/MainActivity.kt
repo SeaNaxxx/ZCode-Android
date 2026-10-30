@@ -1,8 +1,11 @@
 package io.github.zcodeandroid.app
 
 import android.Manifest
+import android.app.UiModeManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -32,6 +35,37 @@ class MainActivity : ComponentActivity() {
     private var mode by mutableStateOf(MODE_LOCAL)
     private var remoteUrl by mutableStateOf<String?>(null)
     private var recentLinks by mutableStateOf<List<RemoteControlRecentLink>>(emptyList())
+
+    /**
+     * Follow the SYSTEM dark setting explicitly. The runtime architecture
+     * pins targetSdk to 28 (Android 10+ blocks exec() from app-writable
+     * storage, so the embedded Bionic node could not run otherwise) — and
+     * apps targeting pre-Q do not receive the system night mode in their
+     * Configuration: on a dark phone this app (and the WebView's
+     * prefers-color-scheme, which the official ZCode web UI follows) stayed
+     * light. Owner report 2026-10-31: light UI on a dark phone, no dark
+     * theme. Fix: read the real system night mode from UiModeManager (a
+     * system service, unaffected by the targetSdk legacy behavior) and
+     * qualify the base context with UI_MODE_NIGHT_YES when the system is
+     * dark. Compose then picks the dark scheme, values-night themes apply,
+     * and the WebView reports prefers-color-scheme: dark.
+     */
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(applySystemNightMode(newBase))
+    }
+
+    private fun applySystemNightMode(base: Context): Context {
+        val wantsDark = runCatching {
+            (base.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager)
+                ?.nightMode == UiModeManager.MODE_NIGHT_YES
+        }.getOrDefault(false)
+        val current = base.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        if (!wantsDark || current == Configuration.UI_MODE_NIGHT_YES) return base
+        val cfg = Configuration(base.resources.configuration)
+        cfg.uiMode = (cfg.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
+            Configuration.UI_MODE_NIGHT_YES
+        return base.createConfigurationContext(cfg)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
