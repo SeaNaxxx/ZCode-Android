@@ -799,9 +799,16 @@ private const val JS_VISUAL_STATE = """(function(){
     mqInner: window.matchMedia('(height: ' + ih + 'px)').matches,
     mqZero: window.matchMedia('(height: 0px)').matches,
     mqMin700: window.matchMedia('(min-height: 700px)').matches };
+  // What the WebView REPORTS for prefers-color-scheme — the direct measurement
+  // of the app-side night-mode wiring (MainActivity follows the system dark
+  // setting; targetSdk 28 does not receive it on its own). The frontend's own
+  // 'dark' class is NOT a reliable indicator (the login UI is dark-styled by
+  // default even on a light system), so the dark-mode CI stage asserts THIS.
+  var pcs = { dark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+    light: window.matchMedia('(prefers-color-scheme: light)').matches };
   var heights = [];
   [document.documentElement, document.body, root, root.firstElementChild].forEach(function(el){ if (!el) return; var cs = getComputedStyle(el); heights.push(dsc(el) + ' cssH=' + cs.height + ' offH=' + el.offsetHeight + ' scrollH=' + el.scrollHeight); });
-  return JSON.stringify({ vis: document.visibilityState, hidden: document.hidden, focus: document.hasFocus(), docHiddenAttr: document.documentElement.hasAttribute('data-document-hidden'), bootTheme: document.documentElement.getAttribute('data-zcode-bootstrap-theme'), dark: document.documentElement.classList.contains('dark'), iframes: document.querySelectorAll('iframe').length, anims: anims, hits: hits, vp: vp, mq: mq, heights: heights, nodes: nodes });
+  return JSON.stringify({ vis: document.visibilityState, hidden: document.hidden, focus: document.hasFocus(), docHiddenAttr: document.documentElement.hasAttribute('data-document-hidden'), bootTheme: document.documentElement.getAttribute('data-zcode-bootstrap-theme'), dark: document.documentElement.classList.contains('dark'), pcs: pcs, iframes: document.querySelectorAll('iframe').length, anims: anims, hits: hits, vp: vp, mq: mq, heights: heights, nodes: nodes });
 })()"""
 
 private fun evaluateJs(view: WebView, script: String, onResult: (String) -> Unit) {

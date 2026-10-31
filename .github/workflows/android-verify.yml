@@ -823,49 +823,100 @@ jobs:
             adb shell input keyevent KEYCODE_BACK || true
           '
 
-      - name: dark-mode | system dark must reach the app AND the WebView (owner report 2026-10-31)
+      - name: dark-mode | system dark must reach the WebView (A/B with prefers-color-scheme probe)
         run: |
           # The app targets SDK 28 (architectural constraint: exec() from app
           # storage), so the system night mode does NOT arrive in its
-          # Configuration on its own. MainActivity now follows UiModeManager
-          # explicitly; this stage proves it end-to-end on the emulator:
-          # switch the SYSTEM to dark, the activity recreates, and the ZCode
-          # web UI must flip to its dark theme (documentElement gains the
-          # 'dark' class — reported by the visual-state probe).
+          # Configuration on its own. MainActivity follows UiModeManager
+          # explicitly and night-qualifies the base context, which is what the
+          # WebView's prefers-color-scheme is derived from. Measured directly:
+          # the visual-state probe reports pcs.dark / pcs.light (matchMedia) —
+          # the frontend's own 'dark' class is NOT used as the verdict because
+          # the login UI is dark-styled by default on any system. Honest A/B:
+          # system LIGHT must give pcs.dark=false, system DARK must give
+          # pcs.dark=true.
+          cat > /tmp/verify-dark-verdict.py <<'EOF'
+          import sys, re, json
+          path, want = sys.argv[1], sys.argv[2]  # want = "light" | "dark"
+          log = open(path, errors="replace").read()
+          lines = [l for l in log.splitlines() if "visual-state: " in l and "ZCodeWeb" in l]
+          found = []
+          for l in lines:
+              m = re.search(r"visual-state: \"(.*)\"", l)
+              if not m:
+                  continue
+              try:
+                  d = json.loads(m.group(1).encode("utf-8").decode("unicode_escape"))
+              except Exception:
+                  continue
+              pcs = d.get("pcs") or {}
+              if pcs.get("dark") is not None:
+                  found.append(pcs)
+          print("pcs probes found:", found)
+          if not found:
+              print("FAIL: no visual-state pcs evidence in", path)
+              sys.exit(1)
+          last = found[-1]
+          if want == "dark" and last.get("dark") is True:
+              print("DARK-MODE A/B: system dark -> WebView reports prefers-color-scheme: dark. VERIFIED")
+              sys.exit(0)
+          if want == "light" and last.get("dark") is False:
+              print("DARK-MODE A/B: system light -> WebView reports prefers-color-scheme: light. VERIFIED")
+              sys.exit(0)
+          print("FAIL: want", want, "got", last)
+          sys.exit(1)
+          EOF
           source /tmp/verify-stage-lib.sh
           stage_run dark-mode -- bash -c '
             set -e
-            adb shell cmd uimode night yes
+            # --- leg A: system LIGHT --------------------------------------
+            adb shell cmd uimode night no
             sleep 2
-            # the activity must be recreated for attachBaseContext to run
             adb shell am force-stop '"$PKG"'
             sleep 2
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
             sleep 6
             if ui_has_text "send you notifications"; then ui_tap_text "t allow" 10 || true; fi
-            # wait for the app to settle; start the runtime again (force-stop
-            # killed the foreground service and its node child), then reopen
             STARTED=0
             for i in $(seq 1 40); do
               if ui_has_text "Start ZCode"; then ui_tap_text "Start ZCode" 30 || true; fi
-              if ui_has_text "Running"; then STARTED=1; echo "runtime running again after ~$((i*3))s"; break; fi
+              if ui_has_text "Running"; then STARTED=1; break; fi
               dismiss_anr || true
               sleep 3
             done
-            [ "$STARTED" = "1" ] || { echo "FAIL: runtime did not reach Running under dark mode"; exit 1; }
+            [ "$STARTED" = "1" ] || { echo "FAIL: runtime did not reach Running (leg A)"; exit 1; }
+            sleep 3
+            adb logcat -c || true
+            ui_tap_text "Open ZCode" 60 || true
+            echo "leg A (light): webview open, waiting 40s for probe..."
+            sleep 40
+            shot dark-legA-light
+            adb logcat -d > "$LOGS_DIR/dark-legA-logcat.txt" 2>/dev/null || true
+            python3 /tmp/verify-dark-verdict.py "$LOGS_DIR/dark-legA-logcat.txt" light
+            adb shell input keyevent KEYCODE_BACK || true
+            sleep 2
+            # --- leg B: system DARK ---------------------------------------
+            adb shell cmd uimode night yes
+            sleep 2
+            adb shell am force-stop '"$PKG"'
+            sleep 2
+            adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
+            sleep 6
+            STARTED=0
+            for i in $(seq 1 40); do
+              if ui_has_text "Start ZCode"; then ui_tap_text "Start ZCode" 30 || true; fi
+              if ui_has_text "Running"; then STARTED=1; break; fi
+              dismiss_anr || true
+              sleep 3
+            done
+            [ "$STARTED" = "1" ] || { echo "FAIL: runtime did not reach Running (leg B)"; exit 1; }
             sleep 3
             ui_tap_text "Open ZCode" 60 || true
-            echo "opened webview; waiting 45s for frontend boot + invisible probe..."
-            sleep 45
-            shot dark-mode-open
-            adb logcat -d > "$LOGS_DIR/dark-mode-logcat.txt" 2>/dev/null || true
-            echo "--- dark-mode evidence: visual-state dark flag + shim lines ---"
-            grep -E "visual-state: .*dark.:true|zcode-shim|dom-state" "$LOGS_DIR/dark-mode-logcat.txt" | tail -8 || true
-            if grep -E "visual-state: .*dark.:true" "$LOGS_DIR/dark-mode-logcat.txt" >/dev/null 2>&1; then
-              echo "DARK MODE: VERIFIED — ZCode web UI flipped to dark (documentElement.dark class present)"
-            else
-              echo "FAIL: ZCode web UI did not report dark:true under system dark mode"; exit 1
-            fi
+            echo "leg B (dark): webview open, waiting 40s for probe..."
+            sleep 40
+            shot dark-legB-dark
+            adb logcat -d > "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null || true
+            python3 /tmp/verify-dark-verdict.py "$LOGS_DIR/dark-legB-logcat.txt" dark
             adb shell cmd uimode night no
           '
 
