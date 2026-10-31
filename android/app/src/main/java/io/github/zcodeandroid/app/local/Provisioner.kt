@@ -308,7 +308,7 @@ object Provisioner {
         if (hasMockKit) {
             RuntimeBus.setState(RuntimeState.Provisioning("staging offline agent kit", 65))
             val kit = RuntimePaths.bionicKitDir(app).apply { mkdirs() }
-            for (n in listOf("verify-mock-provider.cjs", "verify-agent-driver.cjs", "verify-mock-provider-config.json", "register-workspace-project.cjs")) {
+            for (n in listOf("verify-mock-provider.cjs", "verify-agent-driver.cjs", "verify-mock-provider-config.json", "register-workspace-project.cjs", "verify-second-send.cjs")) {
                 copyAsset(app, "runtime/bionic/$n", File(kit, n))
             }
         }

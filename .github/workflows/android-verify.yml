@@ -70,6 +70,27 @@ jobs:
           path: upstream
           fetch-depth: 1
 
+      - name: Apply upstream patch — standalone server treats UI "local" as its own host
+        run: |
+          # On-device defect (owner diagnostic, 2026-10-31): the standalone
+          # server's ownerHostId is a Source-Server identity
+          # (remote:server:<id>) while the web UI, for an EXISTING session,
+          # calls projectService.resolveSessionDirectories(task, "local")
+          # BEFORE dispatching the send (SessionPane
+          # dispatchSendTextAfterConfig). route() rejected "local" with
+          # project.host-offline -> the SECOND message in the same
+          # conversation died pre-admission (no DB row); the FIRST message
+          # skips that call (sessionId null), hence "first works, second
+          # fails". The patch adds the minimal route() guard mirroring
+          # upstream's own remoteOwner concept used in prepareSession.
+          # git apply --check fails loudly if the upstream pin moves and the
+          # context no longer matches — never a silent no-op.
+          test -f scripts/upstream-patches/0001-project-route-local-alias-for-standalone-server.patch
+          ( cd upstream \
+              && git apply --check ../scripts/upstream-patches/0001-project-route-local-alias-for-standalone-server.patch \
+              && git apply ../scripts/upstream-patches/0001-project-route-local-alias-for-standalone-server.patch \
+              && grep -n 'hostId === "local"' packages/services/src/project/index.ts )
+
       - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
@@ -165,6 +186,7 @@ jobs:
           cp scripts/embedded/assets/verify-mock-provider.cjs scripts/embedded/assets/verify-agent-driver.cjs \
              scripts/embedded/assets/verify-mock-provider-config.json \
              scripts/embedded/assets/register-workspace-project.cjs \
+             scripts/embedded/assets/verify-second-send.cjs \
              scripts/embedded/assets/tls-diagnose.cjs \
              scripts/embedded/assets/cacert.pem android/app/src/main/assets/runtime/bionic/
           cp "${{ steps.dist.outputs.tarball }}" android/app/src/main/assets/runtime/zcode-dist.tgz
@@ -191,6 +213,7 @@ jobs:
             assets/runtime/bionic/verify-agent-driver.cjs \
             assets/runtime/bionic/verify-mock-provider-config.json \
             assets/runtime/bionic/register-workspace-project.cjs \
+            assets/runtime/bionic/verify-second-send.cjs \
             assets/runtime/bionic/tls-diagnose.cjs \
             assets/runtime/bionic/cacert.pem ; do
             unzip -Z1 "$APK" | grep -qx "$entry" || { echo "FATAL: $entry missing from APK"; exit 1; }
@@ -979,6 +1002,30 @@ jobs:
             shot agent-effects
           '
 
+      - name: second-send | existing-session send precondition on the app's own server
+        run: |
+          # Owner device diagnostic (2026-10-31): the SECOND message in the
+          # same conversation failed with project.host-offline BEFORE
+          # admission (no input_history row). Root cause: SessionPane's
+          # pre-send projectService.resolveSessionDirectories(task, "local")
+          # hit route() which rejected the UI's "local" hostId because the
+          # standalone server owner is remote:server:<id>. This stage drives
+          # the EXACT WS RPC boundary against the app's own server:
+          # readTree({hostId:"local"}) + resolveSessionDirectories(REAL
+          # session id, "local") after a REAL createSession via zcode-agent.
+          # The unpatched server fails BOTH probes (sandbox A/B proven,
+          # exit 4); the patched server returns SECOND-SEND-REGRESSION-OK.
+          source /tmp/verify-stage-lib.sh
+          adb push scripts/embedded/assets/verify-second-send.cjs /data/local/tmp/verify-second-send.cjs > /dev/null
+          stage_run second-send -- bash -c '
+            set -e
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-second-send.cjs \
+              --url http://127.0.0.1:3030 --workspace '"$WS"' \
+              --dist '"$RT"'/dist/zcode/bin/zcode.mjs --timeout 240 \
+              | tee /dev/stderr | grep -q "SECOND-SEND-REGRESSION-OK" \
+              || { echo "FAIL: second-send precondition still rejected (host-offline class)"; exit 1; }
+          '
+
       - name: persistence | force-stop + relaunch (no re-provision, files survive)
         run: |
           source /tmp/verify-stage-lib.sh
@@ -1094,7 +1141,7 @@ jobs:
           import json, os, sys
           d = sys.argv[1]
           stages = ["install", "offline", "setup-tap", "node-probe", "openssl-offline", "start-tap",
-                    "frontend-smoke", "dark-mode", "agent-loop", "agent-effects", "persistence", "net-restore", "tls-https", "tls-zai", "emu-boot"]
+                    "frontend-smoke", "dark-mode", "agent-loop", "agent-effects", "second-send", "persistence", "net-restore", "tls-https", "tls-zai", "emu-boot"]
           rows = []
           for s in stages:
               p = os.path.join(d, s + ".json")
@@ -1112,6 +1159,7 @@ jobs:
               "frontend-smoke-b": "edge-to-edge OFF A/B: isolates the WebView viewport-unit collapse trigger (runtime marker, force-stop + full restart)",
               "agent-loop": "real agent loop end-to-end (mock model; auth/billing NOT exercised)",
               "agent-effects": "agent effects verified on disk (criterion 3 mechanics)",
+              "second-send": "second message in the SAME conversation: pre-send resolveSessionDirectories(task, local) must be admitted on the app's own server (owner device defect 2026-10-31: project.host-offline pre-admission; x86_64 AVD app-level evidence only)",
               "persistence": "restart survival, no re-provision (criterion 5 mechanics)",
               "net-restore": "test precondition for tls-https (not a device criterion)",
               "tls-https": "real HTTPS with certificate verification enabled (failure-2 acceptance; x86_64 AVD app-level evidence only)",

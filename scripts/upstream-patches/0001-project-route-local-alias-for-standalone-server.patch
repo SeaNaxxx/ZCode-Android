@@ -1,0 +1,57 @@
+diff --git a/packages/services/src/project/contract.test.ts b/packages/services/src/project/contract.test.ts
+index e3d83411..f821a2c3 100644
+--- a/packages/services/src/project/contract.test.ts
++++ b/packages/services/src/project/contract.test.ts
+@@ -241,6 +241,37 @@ it("routes every foreign project operation to its existing owner and never falls
+   expect(repository).not.toHaveBeenCalled();
+ });
+ 
++it("standalone server treats local as its own host for UI calls without workspace identity", async () => {
++  // 独立 Server 的 ownerHostId 是远端风格的 Source Server 身份（remote:server:<id>），
++  // 但它就是客户端眼中唯一的本机：SessionPane 对既有会话的发送前
++  // resolveSessionDirectories(task, "local")、任务分组按 Host readTree({hostId:"local"})
++  // 都必须落到本仓库，而不是按离线远端拒绝（真机观察到的第二条消息发送失败）。
++  const readTree = vi.fn(async () => ({ projects: [], tasks: [] }));
++  const resolveSessionDirectories = vi.fn(async () => ({
++    projectId: "p",
++    workspacePath: "/ws",
++    additionalDirectories: [],
++  }));
++  const repository = vi.fn(async () =>
++    ({ readTree, resolveSessionDirectories }) as unknown as ProjectRepositoryContract,
++  );
++  const service = createProjectService({
++    repository,
++    workspaceDirectory: "/workspace",
++    ownerHostId: "remote:server:localhost",
++  });
++  expect(await service.readTree({ hostId: "local" })).toEqual({ projects: [], tasks: [] });
++  expect(
++    await service.resolveSessionDirectories({ workspacePath: "/ws", taskId: "s" }, "local"),
++  ).toEqual({ projectId: "p", workspacePath: "/ws", additionalDirectories: [] });
++  expect(readTree).toHaveBeenCalledTimes(1);
++  expect(resolveSessionDirectories).toHaveBeenCalledTimes(1);
++  // 其余远端身份仍然拒绝：没有 resolveHost 时不得假装存在连接。
++  await expect(service.readTree({ hostId: "remote:server:other" })).rejects.toThrow(
++    "project.host-offline",
++  );
++});
++
+ it("browses owner directories without touching project storage or admitting a session", async () => {
+   const repository = vi.fn();
+   const directories = { home: async () => "/owner", read: vi.fn(async () => []) };
+diff --git a/packages/services/src/project/index.ts b/packages/services/src/project/index.ts
+index cf0198b2..79dcd8e6 100644
+--- a/packages/services/src/project/index.ts
++++ b/packages/services/src/project/index.ts
+@@ -83,6 +83,10 @@ export function createProjectService(options: {
+ }): IProjectService {
+   const route = async (hostId?: string) => {
+     if (!hostId || hostId === (options.ownerHostId ?? "local")) return null;
++    // 独立 Server 是 Web 客户端眼中唯一的 Host：前端对未携带 workspaceIdentity 的
++    // 既有会话以 local 发起（SessionPane 发送前解析目录、任务分组按 Host 读树），
++    // 此 local 即服务端本机，不得按离线远端拒绝。
++    if (hostId === "local" && options.ownerHostId && options.ownerHostId !== "local") return null;
+     if (!options.resolveHost) throw new Error("project.host-offline");
+     return options.resolveHost(hostId);
+   };
