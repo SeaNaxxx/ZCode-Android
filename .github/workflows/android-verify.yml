@@ -111,10 +111,30 @@ jobs:
           set -e
           TARBALL=$(find upstream/dist/zcode/releases -name 'zcode-*.tar.gz' | head -1)
           test -n "$TARBALL" || { echo "dist tarball not found"; exit 1; }
+          # Upstream gap at this pin: stageZCodePackage never stages the bundled
+          # skill pack (bootstrap looks for <agentEntryDir>/packages/bundled-skills
+          # or siblings), so the runtime logs "Bundled skill pack unavailable"
+          # and the dynamic-workflows skill is missing on device (observed in the
+          # owner's on-device diagnostic, 2026-10-31). Inject the pack at
+          # zcode/agent/packages/bundled-skills (candidate dir of
+          # dist/zcode/agent/zcode.cjs), re-tar, and refresh the sha256 output so
+          # the APK and the Provisioner stay hash-consistent.
+          PACK=upstream/apps/zcode-cli/packages/bundled-skills
+          for req in SKILL.md patterns.md examples.md; do
+            test -f "$PACK/skills/dynamic-workflows/$req" \
+              || { echo "FATAL: bundled skill pack incomplete ($req)"; exit 1; }
+          done
+          rm -rf /tmp/dist-inject && mkdir -p /tmp/dist-inject
+          tar -xzf "$TARBALL" -C /tmp/dist-inject
+          mkdir -p /tmp/dist-inject/zcode/agent/packages
+          cp -r "$PACK" /tmp/dist-inject/zcode/agent/packages/bundled-skills
+          tar -czf "$TARBALL" -C /tmp/dist-inject zcode
+          tar -tzf "$TARBALL" | grep -qx "zcode/agent/packages/bundled-skills/skills/dynamic-workflows/SKILL.md" \
+            || { echo "FATAL: skill pack injection failed"; exit 1; }
           SHA=$(sha256sum "$TARBALL" | awk '{print $1}')
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
-          echo "dist: $TARBALL sha256=$SHA ($(du -h "$TARBALL" | cut -f1))"
+          echo "dist: $TARBALL sha256=$SHA ($(du -h "$TARBALL" | cut -f1)) [bundled-skills injected]"
 
       - name: Build Bionic bundles (aarch64 + x86_64, sha256-verified closure)
         run: |
@@ -175,7 +195,14 @@ jobs:
             assets/runtime/bionic/cacert.pem ; do
             unzip -Z1 "$APK" | grep -qx "$entry" || { echo "FATAL: $entry missing from APK"; exit 1; }
           done
-          echo "aarch64 APK content checks passed (all embedded entries present)"
+          # Deep check: the dist tarball inside the APK must carry the bundled
+          # skill pack (device diagnostic 2026-10-31: dynamic-workflows missing).
+          TD=$(mktemp -d)
+          unzip -p "$APK" assets/runtime/zcode-dist.tgz > "$TD/dist.tgz"
+          tar -tzf "$TD/dist.tgz" | grep -qx "zcode/agent/packages/bundled-skills/skills/dynamic-workflows/SKILL.md" \
+            || { echo "FATAL: bundled skill pack missing from dist tarball"; exit 1; }
+          rm -rf "$TD"
+          echo "aarch64 APK content checks passed (all embedded entries present, bundled skill pack included)"
 
       - name: Stage embedded assets (x86_64) + rebuild APK
         run: |

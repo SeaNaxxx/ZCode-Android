@@ -80,6 +80,45 @@ for (const key of ['SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS', 'ZCODE_AGENT_CA_CERT'
   log({ step: 'ca-file', key, path: p, exists: !!st, bytes: st ? st.size : null });
 }
 
+// --- personal provider registry evidence (secret-free) ---------------------
+// The API-key turn path reads $ZCODE_DATA_BASE_DIR/.zcode/v2/
+// provider_config.json (same file the UI writes and the CLI reads). Report
+// structure ONLY: provider ids, enabled flags, access TYPE, api type, base
+// URL, model ids, and a boolean apiKeyPresent. access.apiKey VALUES are
+// NEVER read into memory here beyond that boolean check and are NEVER
+// logged — the diagnostic must stay safe to paste into any chat.
+try {
+  const fs = require('fs');
+  const path = require('path');
+  const base = env.ZCODE_DATA_BASE_DIR || path.join(env.HOME || '', '.zcode-data');
+  const pcPath = path.join(base, '.zcode', 'v2', 'provider_config.json');
+  if (fs.existsSync(pcPath)) {
+    const pc = JSON.parse(fs.readFileSync(pcPath, 'utf8'));
+    const rules =
+      (pc && pc.config && pc.config.providerConfigRules &&
+        pc.config.providerConfigRules.providerRules) || [];
+    log({
+      step: 'personal-provider-config',
+      path: pcPath,
+      present: true,
+      providers: rules.map((r) => ({
+        providerId: r && r.providerId,
+        enabled: r ? r.enabled === true : false,
+        accessType: (r && r.config && r.config.access && r.config.access.type) || null,
+        apiKeyPresent: !!(r && r.config && r.config.access &&
+          typeof r.config.access.apiKey === 'string' && r.config.access.apiKey.length > 0),
+        apiType: (r && r.config && r.config.api && r.config.api.type) || null,
+        baseUrl: (r && r.config && r.config.api && r.config.api.baseUrl) || null,
+        models: (r && r.config && (r.config.personalModelIds || r.config.builtinModelIds)) || [],
+      })),
+    });
+  } else {
+    log({ step: 'personal-provider-config', path: pcPath, present: false });
+  }
+} catch (e) {
+  log({ step: 'personal-provider-config', error: 'inspection failed: ' + (e && e.message) });
+}
+
 const startedAt = Date.now();
 let attemptsLeft = 3; // ENOTFOUND/EAI_AGAIN-class failures get retries: the
                       // probe can start while the network is still coming up
