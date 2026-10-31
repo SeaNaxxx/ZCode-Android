@@ -81,15 +81,22 @@ for (const key of ['SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS', 'ZCODE_AGENT_CA_CERT'
 }
 
 const startedAt = Date.now();
-const req = https.get(
-  target,
-  {
-    headers: { 'User-Agent': 'zcode-tls-diagnose', Accept: '*/*' },
-    timeout: 30000,
-    // NOTE: rejectUnauthorized stays at its default (true). Verification is
-    // never weakened here — the whole point is to observe the real verdict.
-  },
-  (res) => {
+let attemptsLeft = 3; // ENOTFOUND/EAI_AGAIN-class failures get retries: the
+                      // probe can start while the network is still coming up
+                      // (CI offline phase; phone right after boot).
+
+function attempt() {
+  attemptsLeft -= 1;
+  const startedAt = Date.now();
+  const req = https.get(
+    target,
+    {
+      headers: { 'User-Agent': 'zcode-tls-diagnose', Accept: '*/*' },
+      timeout: 30000,
+      // NOTE: rejectUnauthorized stays at its default (true). Verification is
+      // never weakened here — the whole point is to observe the real verdict.
+    },
+    (res) => {
     const sock = res.socket;
     const chainIssuers = [];
     try {
@@ -139,11 +146,24 @@ const req = https.get(
 
 req.on('error', (err) => {
   const cause = err && err.cause ? err.cause : null;
+  const code = err.code || (cause && cause.code) || null;
+  const transient = code === 'ENOTFOUND' || code === 'EAI_AGAIN' ||
+    code === 'ETIMEDOUT' || code === 'ECONNREFUSED' || code === 'ENETUNREACH';
+  if (transient && attemptsLeft > 0) {
+    log({
+      step: 'retry',
+      code,
+      attemptsLeft,
+      note: 'network not ready yet (expected during the offline phase / early boot); retrying in 8s',
+    });
+    setTimeout(attempt, 8000);
+    return;
+  }
   log({
     step: 'error',
     error: err.message,
-    code: err.code || null,
-    causeCode: cause ? cause.code || null : (err.code || null),
+    code,
+    causeCode: cause ? cause.code || null : null,
     causeReason: cause ? cause.reason || null : null,
     causeMessage: cause ? cause.message || null : null,
     durationMs: Date.now() - startedAt,
@@ -155,3 +175,6 @@ req.on('error', (err) => {
 req.on('timeout', () => {
   req.destroy(new Error('timeout after 30s'));
 });
+}
+
+attempt();

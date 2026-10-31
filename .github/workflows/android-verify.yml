@@ -859,9 +859,9 @@ jobs:
             sleep 45
             shot dark-mode-open
             adb logcat -d > "$LOGS_DIR/dark-mode-logcat.txt" 2>/dev/null || true
-            echo "--- dark-mode evidence: visual-state dark flag + shim/shim-idle lines ---"
-            grep -E 'visual-state: .*"dark":true|\[zcode-shim\]|dom-state' "$LOGS_DIR/dark-mode-logcat.txt" | tail -8 || true
-            if grep -E 'visual-state: .*"dark":true' "$LOGS_DIR/dark-mode-logcat.txt" >/dev/null 2>&1; then
+            echo "--- dark-mode evidence: visual-state dark flag + shim lines ---"
+            grep -E "visual-state: .*dark.:true|zcode-shim|dom-state" "$LOGS_DIR/dark-mode-logcat.txt" | tail -8 || true
+            if grep -E "visual-state: .*dark.:true" "$LOGS_DIR/dark-mode-logcat.txt" >/dev/null 2>&1; then
               echo "DARK MODE: VERIFIED — ZCode web UI flipped to dark (documentElement.dark class present)"
             else
               echo "FAIL: ZCode web UI did not report dark:true under system dark mode"; exit 1
