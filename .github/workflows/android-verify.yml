@@ -692,7 +692,7 @@ jobs:
           # so any success is download-free and Termux-free.
           source /tmp/verify-stage-lib.sh
           openssl req -x509 -newkey rsa:2048 -keyout /tmp/verify-tls-key.pem \
-            -out /tmp/verify-tls-cert.pem -days 2 -nodes -subj "/CN=localhost" \
+            -out /tmp/verify-tls-cert.pem -days 730 -nodes -subj "/CN=localhost" \
             > /dev/null 2>&1
           adb push scripts/embedded/assets/verify-tls-offline-probe.cjs /data/local/tmp/verify-tls-offline-probe.cjs > /dev/null
           adb push /tmp/verify-tls-cert.pem /data/local/tmp/verify-tls-cert.pem > /dev/null
