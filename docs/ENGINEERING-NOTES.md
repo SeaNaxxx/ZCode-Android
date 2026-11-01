@@ -232,6 +232,62 @@ fixes below are scoped, not all actionable in this repo):
   (§1, `oauth-flow-probe.cjs`); the page's apparent wait does not reflect
   app-side state.
 
+### 5.7 Self-diagnostics bridge and the mobile UI route (2026-11)
+
+Resolutions of the external review conditions on the self-diagnostics /
+native-UI study (evidence per claim; nothing below is assumed):
+
+- Engine-health evidence is CONCLUSIVE BY CODE: the viewport shim logs
+  `[zcode-shim] engine healthy (vh/dvh resolve) - shim idle` exactly once per
+  page load when its live probe (`engineBroken()`) passes, and it logs
+  `[zcode-shim] applied: ...` (throttled 250 ms) whenever it does not. The
+  healthy path now also refuses to log before `document.body` exists, so a
+  premature "healthy" line cannot poison the verdict. Device logs that contain
+  `applied` lines and zero `engine healthy` lines therefore prove the broken
+  engine state for that log's whole retention window (current + `.old`).
+- The mobile UI is INSIDE the bundled dist: upstream `packages/web` is the
+  same bundle that serves the hosted `/remote/v4` entry
+  (`resolveWebRemoteControlRoutePathFromBaseUrl` maps a root BASE_URL to the
+  `/remote` route, and the standalone server's SPA fallback serves `/remote`
+  with `index.html` — `isStaticFallbackAllowed`). `GET /remote` on the local
+  server therefore boots the built-in web-remote-control (mobile) entry from
+  the SAME dist with zero patches. Whether that mobile UI fully connects to
+  the LOCAL server session (vs. expecting the hosted relay) is UNKNOWN until
+  the `mobile-ui-probe` CI stage records its first real run.
+- Upstream web-surface contract is PINNED BY TEST: `verify-web-api-contract.cjs`
+  (CI stage `contract-api`) asserts `GET /` and `GET /remote` return 200
+  text/html, `GET /ws` is not 404, and an authored control
+  (`/api/__contract_probe__`) must 404 — proving the no-SPA-fallback semantics
+  for `/api/*`. A pin bump that moves this surface fails the build instead of
+  silently breaking the phone UI. The upstream pin is
+  `3c5b227649371507ddc4eb46ac5133afe6db1cab` (declared in
+  `android-verify.yml` `UPSTREAM_PIN`).
+- Agent-side diagnostics (P0, no app changes): `diag-collector.cjs` gathers
+  one redacted JSON snapshot — same-uid node processes with BOTH RSS and PSS
+  in kB (RSS double-counts shared pages across the node process family; PSS
+  is the honest per-process figure where readable), MemTotal/MemAvailable,
+  storage free, `GET /` and `GET /remote` probes, webconsole verdict counters
+  (applied vs engine-healthy, last `htmlPx` values — the vehicle for the
+  still-unexplained 941x436 landscape-shaped geometry inside portrait
+  screenshots), and the persisted log tails. CI runs it as the `diag-collector`
+  stage.
+- App-side diagnostics bridge (P1a): `ZcodeServer` mirrors runtime stdout
+  (`agent|`/`mock|` lines) to `files/logs/server.log` and
+  `LocalServerService` keeps `files/logs/diag-report.json` fresh (on every
+  state transition + every 5 min). Both rotate at 512 KiB via the shared
+  `DiagFileSink`. Every string in the report passes a secret-shape redactor
+  (GitHub PATs, z.ai key shapes, Bearer/credential assignments) before it is
+  written, because log lines can carry untrusted page text that the agent
+  will read.
+- Cheap mobile-UI experiment (review condition 6, before any native shell):
+  `LocalApp` honors a `files/config-web-url` file containing a loopback PATH
+  (same opt-in pattern as `config-edge-to-edge-off`; unwritable on release
+  installs) and the CI `mobile-ui-probe` stage boots the WebView on
+  `/remote`, capturing navigation, console, visual-state and bitmap evidence.
+  The stage gates only on what must be true (override fired, `/remote`
+  finished loading, renderer alive); whether the mobile UI connects to the
+  local session is recorded as an observation.
+
 ## 6. CI
 
 - `android-verify.yml` (manual, `workflow_dispatch`): builds the official
