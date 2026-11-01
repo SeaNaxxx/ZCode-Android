@@ -55,9 +55,34 @@ class LocalServerService : Service() {
             return START_NOT_STICKY
         }
         startInForeground()
+        startDiagReportLoop()
         ensureRuntime()
         return START_REDELIVER_INTENT
     }
+
+    /**
+     * P1a diag bridge (self-diagnostics study, 2026-11): keep
+     * files/logs/diag-report.json fresh — write on every runtime state
+     * transition and every 5 minutes while the service lives. The embedded
+     * agent reads this file (same uid) to see app-side state; no new IPC,
+     * no new service — one bounded coroutine on the existing service scope.
+     */
+    private fun startDiagReportLoop() {
+        if (diagReportLoopStarted) return
+        diagReportLoopStarted = true
+        val app = applicationContext
+        scope.launch {
+            RuntimeBus.state.collect { DiagReport.write(app.filesDir, WebDiagnostics.webViewProviderInfo(app)) }
+        }
+        scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(300_000L)
+                DiagReport.write(app.filesDir, WebDiagnostics.webViewProviderInfo(app))
+            }
+        }
+    }
+
+    private var diagReportLoopStarted = false
 
     /**
      * Single decision point for "is the runtime running, and who owns it".

@@ -408,6 +408,24 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                 // restarts, unlike DiagLog/RuntimeBus/logcat. Installed before
                 // the first log call below so the boot lines land in the file.
                 WebDiagnostics.initFileSink(ctx.filesDir)
+                // Config-file URL override (same pattern as
+                // MainActivity.config-edge-to-edge-off): a `files/config-web-url`
+                // file containing a loopback PATH (must start with "/") redirects
+                // the WebView to that route — e.g. "/remote", the upstream web
+                // bundle's built-in mobile remote-control entry. No UI writes
+                // this file; on release installs it is unwritable (non-debuggable),
+                // so normal users always get the default URL.
+                val effectiveUrl = runCatching {
+                    val cfg = java.io.File(ctx.filesDir, "config-web-url")
+                    val path = if (cfg.isFile) cfg.readText().trim() else ""
+                    if (path.startsWith("/") && !path.startsWith("//")) {
+                        val overridden = "http://127.0.0.1:${RuntimePaths.SERVER_PORT}$path"
+                        WebDiagnostics.log("webview", "config-web-url override active: $overridden")
+                        overridden
+                    } else {
+                        url
+                    }
+                }.getOrDefault(url)
                 var experimentRan = false
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true
@@ -714,7 +732,7 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                                     "webview",
                                     "first layout ${vw}x$vh -> loadUrl now (pre-layout viewport latch avoided: failure-3 fix)"
                                 )
-                                loadUrl(url)
+                                loadUrl(effectiveUrl)
                             }
                         }
                     })
@@ -722,10 +740,10 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                         if (!started) {
                             started = true
                             WebDiagnostics.log("webview", "fallback load (no layout callback fired within 2s)")
-                            loadUrl(url)
+                            loadUrl(effectiveUrl)
                         }
                     }, 2_000)
-                    WebDiagnostics.log("webview", "created; will load $url on first layout (failure-3 fix)")
+                    WebDiagnostics.log("webview", "created; will load $effectiveUrl on first layout (failure-3 fix)")
                 }
             }
         )
@@ -986,6 +1004,11 @@ private const val VIEWPORT_SHIM_JS = """
   }
   var lastApply = 0;
   function maybeApply(){
+    // Evidence integrity: engineBroken() returns false while document.body is
+    // still absent (nothing to measure) — logging "engine healthy" in that
+    // window would poison the on-device verdict (its total absence across the
+    // persisted log is the proof that the engine never resolves vh/dvh).
+    if (!(document.body || document.documentElement)) return;
     if (!engineBroken()) {
       if (!window.__zcodeShimHealthyLogged) {
         window.__zcodeShimHealthyLogged = true;

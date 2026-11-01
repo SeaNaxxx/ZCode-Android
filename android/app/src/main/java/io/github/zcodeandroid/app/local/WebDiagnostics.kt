@@ -36,7 +36,7 @@ object WebDiagnostics {
     private const val MAX_FILE_BYTES = 512 * 1024
 
     private val sinkLock = Any()
-    private var sinkFile: java.io.File? = null
+    private var sink: DiagFileSink? = null
 
     /**
      * Install the persisted sink. Called once from the WebView host; safe to
@@ -45,15 +45,15 @@ object WebDiagnostics {
      */
     fun initFileSink(filesDir: java.io.File) {
         synchronized(sinkLock) {
-            if (sinkFile != null) return
+            if (sink != null) return
             val logs = java.io.File(filesDir, "logs").apply { mkdirs() }
-            sinkFile = java.io.File(logs, "webconsole.log")
+            sink = DiagFileSink(java.io.File(logs, "webconsole.log"), MAX_FILE_BYTES.toLong())
         }
     }
 
     /** Test hook: detach the sink (does not delete the file). */
     fun resetFileSinkForTest() {
-        synchronized(sinkLock) { sinkFile = null }
+        synchronized(sinkLock) { sink = null }
     }
 
     fun log(tag: String, message: String) {
@@ -61,38 +61,12 @@ object WebDiagnostics {
         DiagLog.append(line)
         RuntimeBus.append(line)
         runCatching { Log.i(LOGCAT_TAG, line) }
-        appendToSink(line)
-    }
-
-    private fun appendToSink(line: String) {
-        val file = sinkFile ?: return
-        try {
-            synchronized(sinkLock) {
-                if (file.length() > MAX_FILE_BYTES) {
-                    val old = java.io.File(file.parentFile, "webconsole.log.old")
-                    if (old.exists()) old.delete()
-                    file.renameTo(old)
-                }
-                file.appendText("${ts()} $line\n")
-            }
-        } catch (_: Throwable) {
-            // Evidence must never crash the UI; drop the line instead.
-        }
+        sink?.append("${ts()} $line")
     }
 
     /** Last persisted lines for the diagnostics export (oldest first). */
-    fun fileSinkTail(maxLines: Int): List<String> {
-        val file = sinkFile ?: return emptyList()
-        return runCatching {
-            if (!file.isFile) return emptyList()
-            val lines = file.readLines()
-            val old = java.io.File(file.parentFile, "webconsole.log.old")
-            if (old.isFile && lines.size < maxLines) {
-                return (old.readLines() + lines).takeLast(maxLines)
-            }
-            lines.takeLast(maxLines)
-        }.getOrDefault(emptyList())
-    }
+    fun fileSinkTail(maxLines: Int): List<String> =
+        synchronized(sinkLock) { sink?.tail(maxLines) } ?: emptyList()
 
     private fun ts(): String =
         java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)

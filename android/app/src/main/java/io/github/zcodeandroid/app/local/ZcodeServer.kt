@@ -31,12 +31,39 @@ object ZcodeServer {
     @Volatile private var process: Process? = null
     @Volatile private var mockProcess: Process? = null
     @Volatile private var healthThread: Thread? = null
+    @Volatile private var serverLog: DiagFileSink? = null
 
     val isRunning: Boolean
         get() = process?.isAlive == true
 
+    /**
+     * Persisted runtime stdout (P1a diag bridge): the agent|/mock| process
+     * output previously existed only in the in-memory RuntimeBus ring and
+     * logcat — both lost on process death, so every post-mortem of a server
+     * crash or provider failure started blind. Mirrors RuntimeBus lines into
+     * files/logs/server.log (rotated like webconsole.log).
+     */
+    private fun initServerLog(filesDir: java.io.File) {
+        if (serverLog == null) {
+            synchronized(this) {
+                if (serverLog == null) {
+                    serverLog = DiagFileSink(
+                        java.io.File(java.io.File(filesDir, "logs"), "server.log"),
+                        512L * 1024L
+                    )
+                }
+            }
+        }
+    }
+
+    private fun logRuntime(line: String) {
+        RuntimeBus.append(line)
+        serverLog?.append(line)
+    }
+
     suspend fun start(ctx: Context): Unit = withContext(Dispatchers.IO) {
         val app = ctx.applicationContext
+        initServerLog(app.filesDir)
         if (RuntimeBus.state.value is RuntimeState.Running) return@withContext
         if (!Provisioner.isProvisioned(app)) {
             RuntimeBus.setState(RuntimeState.Failed("start", "runtime not provisioned — run setup first"))
@@ -96,7 +123,7 @@ object ZcodeServer {
                         proc.inputStream.bufferedReader().use { r: BufferedReader ->
                             while (true) {
                                 val line = r.readLine() ?: break
-                                RuntimeBus.append("agent| $line")
+                                logRuntime("agent| $line")
                             }
                         }
                     } catch (_: Exception) { }
@@ -164,7 +191,7 @@ object ZcodeServer {
             Thread {
                 try {
                     mp.inputStream.bufferedReader().use { r: BufferedReader ->
-                        while (true) { val line = r.readLine() ?: break; RuntimeBus.append("mock| $line") }
+                        while (true) { val line = r.readLine() ?: break; logRuntime("mock| $line") }
                     }
                 } catch (_: Exception) {}
             }.apply { isDaemon = true }.start()
@@ -203,7 +230,7 @@ object ZcodeServer {
             Thread {
                 try {
                     proc.inputStream.bufferedReader().use { r: BufferedReader ->
-                        while (true) { val line = r.readLine() ?: break; RuntimeBus.append("agent| $line") }
+                        while (true) { val line = r.readLine() ?: break; logRuntime("agent| $line") }
                     }
                 } catch (_: Exception) {}
                 if (!RuntimeBus.state.value.let { it is RuntimeState.Running || it is RuntimeState.Stopped }) {
