@@ -404,6 +404,25 @@ jobs:
           if fails: sys.exit(1)
           print("RENDER VERDICT: UI RENDERS (heights real, card visible, non-uniform bitmap)")
           EOF
+          cat > /tmp/verify-diag-verdict.py <<'EOF'
+          # Diag-collector snapshot verdict (P0 self-diagnostics study): the
+          # snapshot must exist, parse, and carry the persisted web evidence.
+          # Evidence-only stage: records engine/shim counters, gates only on
+          # what must be true for the diagnostics chain to work at all.
+          import json, sys
+          try:
+              d = json.load(open(sys.argv[1]))
+          except Exception as e:
+              print("FAIL: diag snapshot missing or invalid JSON: " + str(e)); sys.exit(1)
+          shim = d.get("webconsole", {}).get("verdictCounters", {})
+          print("diag: processes=" + str(d.get("processes", {}).get("count")))
+          print("diag: shimApplied=" + str(shim.get("shimApplied")) +
+                " engineHealthyEverSeen=" + str(d.get("webconsole", {}).get("shimEngineHealthyEverSeen")))
+          print("diag: /remote status=" + str(d.get("server", {}).get("remoteMobileRoute", {}).get("status")))
+          if d.get("webconsole", {}).get("current", {}).get("exists") is not True:
+              print("FAIL: webconsole.log missing on device"); sys.exit(1)
+          print("DIAG-COLLECTOR: snapshot parsed OK")
+          EOF
           cat > /tmp/verify-stage-lib.sh <<'EOF'
           _emit_result() {
             python3 - "$RESULTS_DIR" "$1" "$2" "$3" "$4" <<'PY'
@@ -807,6 +826,37 @@ jobs:
             adb logcat -d | grep -E "zcode|agent\||mock\|" | tail -25 || true
           '
 
+      - name: contract-api | pin the upstream web surface the app depends on
+        run: |
+          # External review note 3 (2026-11): the UI rides on upstream's
+          # INTERNAL HTTP surface at the pinned commit. This stage pins the
+          # observable contract and fails the build when it moves, so a pin
+          # bump can never silently break the phone UI. Auth-free, device-side,
+          # embedded node. Includes an authored control (/api/* must 404, not
+          # SPA-fallback) so the 404 semantics themselves are verified.
+          source /tmp/verify-stage-lib.sh
+          adb push scripts/embedded/assets/verify-web-api-contract.cjs /data/local/tmp/verify-web-api-contract.cjs > /dev/null
+          stage_run contract-api -- bash -c '
+            set -e
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-web-api-contract.cjs
+          '
+
+      - name: diag-collector | P0 agent-side evidence snapshot (device-side)
+        run: |
+          # P0 of the self-diagnostics study (2026-11): one command that
+          # gathers processes (RSS+PSS), memory, storage, server probes
+          # (incl. /remote), webconsole verdict counters and the persisted
+          # logs into a redacted JSON report. Run here as CI evidence and
+          # shipped as the embedded agent's first diagnostics instrument.
+          source /tmp/verify-stage-lib.sh
+          adb push scripts/embedded/assets/diag-collector.cjs /data/local/tmp/diag-collector.cjs > /dev/null
+          stage_run diag-collector -- bash -c '
+            set -e
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/diag-collector.cjs --app-files /data/user/0/'"$PKG"'/files --out /data/user/0/'"$PKG"'/files/logs/diag-snapshot.json
+            adb shell run-as '"$PKG"' cat /data/user/0/'"$PKG"'/files/logs/diag-snapshot.json > "$LOGS_DIR/diag-snapshot.json"
+            python3 /tmp/verify-diag-verdict.py "$LOGS_DIR/diag-snapshot.json"
+          '
+
       - name: frontend-smoke | open WebView, capture console + DOM state + HONEST render verdict
         run: |
           source /tmp/verify-stage-lib.sh
@@ -978,6 +1028,58 @@ jobs:
             adb logcat -d > "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null || true
             python3 /tmp/verify-dark-verdict.py "$LOGS_DIR/dark-legB-logcat.txt" dark
             adb shell cmd uimode night no
+          '
+
+      - name: mobile-ui-probe | cheap experiment — boot the upstream mobile route (/remote)
+        run: |
+          # External review condition 6 (2026-11): before any native shell,
+          # test the CHEAPEST mobile-UI option first. Finding (condition 5):
+          # the upstream web bundle ships BOTH UIs — the route /remote boots
+          # the built-in web-remote-control (mobile) entry from the SAME dist
+          # (packages/web/src/web-remote-control + shared
+          # resolveWebRemoteControlRoutePathFromBaseUrl; local server SPA
+          # fallback serves it). This stage boots the WebView on /remote via
+          # the config-web-url hook and RECORDS what happens: navigation,
+          # console, render state, bitmap. HONEST GATE: pass requires the
+          # override to load /remote with a live renderer and captured
+          # evidence; whether the mobile UI fully connects to the LOCAL
+          # server session is an OBSERVATION for the owner, not a gate.
+          source /tmp/verify-stage-lib.sh
+          stage_run mobile-ui-probe -- bash -c '
+            set -e
+            adb shell run-as '"$PKG"' sh -c "echo /remote > /data/user/0/$PKG/files/config-web-url"
+            adb shell am force-stop '"$PKG"' || true
+            sleep 3
+            adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
+            sleep 6
+            STARTED=0
+            for i in $(seq 1 40); do
+              if ui_has_text "Start ZCode"; then ui_tap_text "Start ZCode" 30 || true; fi
+              if ui_has_text "Running"; then STARTED=1; break; fi
+              dismiss_anr || true
+              sleep 3
+            done
+            [ "$STARTED" = "1" ] || { echo "FAIL: runtime did not reach Running (mobile probe)"; exit 1; }
+            sleep 3
+            adb logcat -c || true
+            ui_tap_text "Open ZCode" 60 || { echo "FAIL: Open ZCode not found (mobile probe)"; exit 1; }
+            sleep 45
+            shot mobile-remote-route
+            adb logcat -d > "$LOGS_DIR/mobile-ui-logcat.txt" 2>/dev/null || true
+            echo "--- override + navigation trace ---"
+            grep -E "config-web-url override|onPageStarted|onPageCommitVisible|onPageFinished" "$LOGS_DIR/mobile-ui-logcat.txt" | tail -12 || true
+            echo "--- console + fatal signals ---"
+            grep -E ":CONSOLE" "$LOGS_DIR/mobile-ui-logcat.txt" | tail -20 || true
+            grep -E "Render process gone|RENDERER GONE|Uncaught" "$LOGS_DIR/mobile-ui-logcat.txt" | tail -8 || true
+            echo "--- visual evidence ---"
+            grep -E "visual-state|bitmap\[|dom-state" "$LOGS_DIR/mobile-ui-logcat.txt" | tail -12 || true
+            grep -q "config-web-url override active" "$LOGS_DIR/mobile-ui-logcat.txt" || { echo "FAIL: config-web-url hook did not fire"; exit 1; }
+            grep -q "onPageFinished http://127.0.0.1:3030/remote" "$LOGS_DIR/mobile-ui-logcat.txt" || { echo "FAIL: /remote never finished loading"; exit 1; }
+            if grep -qE "RENDERER GONE|Render process gone" "$LOGS_DIR/mobile-ui-logcat.txt"; then echo "FAIL: renderer died on /remote"; exit 1; fi
+            echo "MOBILE-UI-PROBE: /remote booted in the WebView with a live renderer (connection behavior is an observation, see log)"
+            # restore the default UI for the stages that follow
+            adb shell run-as '"$PKG"' rm -f /data/user/0/$PKG/files/config-web-url
+            adb shell input keyevent KEYCODE_BACK || true
           '
 
       - name: agent-loop | ON-DEVICE agent loop with embedded mock (offline)
