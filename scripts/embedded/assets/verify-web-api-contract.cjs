@@ -14,14 +14,21 @@
  *   GET /remote  -> 200 + text/html        (SPA fallback; the upstream bundle's
  *                                           built-in mobile remote-control route —
  *                                           server http.ts: isStaticFallbackAllowed)
- *   GET /ws      -> any status EXCEPT 404  (WebSocket endpoint exists; a plain
- *                                           GET must be rejected, not missing)
+ *   GET /ws      -> must NOT serve the SPA (200 + text/html). At the pinned
+ *                                           commit /ws is an UPGRADE-ONLY route
+ *                                           (http.ts app.get("/ws",
+ *                                           upgradeWebSocket(...))), so a plain
+ *                                           GET falls through (observed 404 on
+ *                                           the emulator). Any 4xx/5xx keeps the
+ *                                           contract; a 200 html page means the
+ *                                           surface moved.
  *   GET /api/__contract_probe__ -> 404     (AUTHORED CONTROL: /api/* must NOT
  *                                           SPA-fallback — proves the 404
  *                                           semantics this contract rests on)
  *
- * Route-existence semantics: 401/403/405/426 all mean "exists but protected /
- * wrong method" -> PASS. Only 404 (or no answer) fails.
+ * Route-existence semantics: for the static routes, 401/403/405/426 all mean
+ * "exists but protected / wrong method" -> PASS; only 404 (or no answer)
+ * fails. The /ws assertion is one-sided by design (never the SPA).
  *
  * Auth-free by design: no credentials are sent, stored, or printed. Runs on
  * the device under the embedded node against 127.0.0.1:3030 (CI stage
@@ -81,10 +88,11 @@ async function main() {
 
   const ws = await probe('/ws');
   results.push(ws);
+  const wsServesSpa = ws.status === 200 && String(ws.contentType).includes('text/html');
   check(
-    'GET /ws (WebSocket route exists, plain GET rejected)',
-    ws.status !== undefined && ws.status !== 404,
-    'status=' + ws.status
+    'GET /ws (upgrade-only route must never serve the SPA)',
+    !wsServesSpa,
+    'status=' + ws.status + ' type=' + ws.contentType + ' (404 expected at the pin: upgrade-only route)'
   );
 
   const control = await probe('/api/__contract_probe__');

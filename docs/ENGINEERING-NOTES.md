@@ -256,7 +256,9 @@ native-UI study (evidence per claim; nothing below is assumed):
   the `mobile-ui-probe` CI stage records its first real run.
 - Upstream web-surface contract is PINNED BY TEST: `verify-web-api-contract.cjs`
   (CI stage `contract-api`) asserts `GET /` and `GET /remote` return 200
-  text/html, `GET /ws` is not 404, and an authored control
+  text/html (both OBSERVED on the emulator run 41348375789 — the mobile route
+  is servable at HTTP level), `GET /ws` never serves the SPA (at the pin it is
+  an upgrade-only route; plain GET observed 404), and an authored control
   (`/api/__contract_probe__`) must 404 — proving the no-SPA-fallback semantics
   for `/api/*`. A pin bump that moves this surface fails the build instead of
   silently breaking the phone UI. The upstream pin is
