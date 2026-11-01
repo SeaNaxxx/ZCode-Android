@@ -194,6 +194,44 @@ Evidence chain (emulator + device, via the paint-evidence suite):
   scripted strings, and use `unzip -Z1` for full-path APK entry checks
   (`unzip -l` truncates long names).
 
+### 5.6 Web-UI sticky error toasts and persisted console evidence
+
+Findings from the 2026-11-01 on-device investigation run through the embedded
+agent (read-only; the web/server bundles are upstream-staged dist, so the
+fixes below are scoped, not all actionable in this repo):
+
+- `Group action failed. Please retry.` is the web bundle's `taskGroup.failed`
+  i18n key. It is shown by the task-group admit/move path and is sticky BY
+  DESIGN (`durationMs: 0`, dedupe key). The success path of the Retry action
+  calls only `groups.refresh()` and never dismisses the toast; reopening the
+  app clears it because the toast lives in React memory while
+  `LocalServerService` keeps the server running. Cosmetic persistence, not a
+  server defect.
+- The concrete admit throw is logged ONLY to the WebView console
+  (`J.error('[task-groups] ...')`); no server-side log records it. Candidates
+  are four throws: client `task-group.service-unavailable`, server
+  `task-group.created-task-unavailable`, `task-group.not-found`, transport
+  failure. The `v4.hydrate` `Session not found` race (warn-level, once per
+  session creation) reads `cli/db.sqlite`+rollout while admit reads
+  `tasks-index.sqlite` — separate stores, no code path between them, so it is
+  NOT a proven cause of the toast.
+- Console evidence previously lived only in memory (DiagLog/RuntimeBus) or
+  rotating logcat — all lost on app restart, which is exactly when users
+  report sticky toasts. `WebDiagnostics` now mirrors every web/js/probe line
+  to `files/logs/webconsole.log` (rotated to `.old` at 512 KiB) and the
+  diagnostics export appends its tail, so the exact throw survives restarts.
+- Upstream-side residuals (documented, not patched here): the sticky toast UX
+  itself; `exchangeZcodeJwtToken` passes no `timeoutMs` (userinfo is capped
+  at 60 s, token exchange can in principle hang unbounded on a stalled
+  network); task rows reserved with `created_at=0` stay unenriched when
+  session persist fails (ghost rows; the reader has a fallback, so cleanup is
+  cosmetic and must stay manual — dry-run, backup, 7-day grace, no FK risks).
+- OAuth perception note: the browser page "Sign-In Complete / authorization
+  is syncing" is served by Z.ai, NOT the local server (string absent from the
+  web bundle). Login completion is driven by the server-side device flow
+  (§1, `oauth-flow-probe.cjs`); the page's apparent wait does not reflect
+  app-side state.
+
 ## 6. CI
 
 - `android-verify.yml` (manual, `workflow_dispatch`): builds the official

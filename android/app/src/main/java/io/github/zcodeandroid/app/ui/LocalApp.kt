@@ -321,6 +321,14 @@ private fun buildDiagnostics(context: android.content.Context): String {
     RuntimeBus.log.value.takeLast(150).forEach { sb.appendLine(it) }
     sb.appendLine("--- webview / js / probe evidence (last 250 lines) ---")
     DiagLog.snapshot().takeLast(250).forEach { sb.appendLine(it) }
+    // Persisted evidence from previous app sessions (the in-memory buffers
+    // above die with the process; sticky web-UI failures such as the
+    // "Group action failed" toast are often reported only after a restart).
+    val persisted = WebDiagnostics.fileSinkTail(80)
+    if (persisted.isNotEmpty()) {
+        sb.appendLine("--- persisted web log (last ${persisted.size} lines, files/logs/webconsole.log) ---")
+        persisted.forEach { sb.appendLine(it) }
+    }
     // On-device bitmap captures from the paint-evidence chain (pull via
     // `adb shell run-as io.github.zcodeandroid.app ls files/logs` when needed).
     File(context.filesDir, "logs").listFiles { f -> f.name.startsWith("webview-") }
@@ -396,6 +404,10 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
+                // Persisted web-evidence sink: survives WebView reloads AND app
+                // restarts, unlike DiagLog/RuntimeBus/logcat. Installed before
+                // the first log call below so the boot lines land in the file.
+                WebDiagnostics.initFileSink(ctx.filesDir)
                 var experimentRan = false
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true

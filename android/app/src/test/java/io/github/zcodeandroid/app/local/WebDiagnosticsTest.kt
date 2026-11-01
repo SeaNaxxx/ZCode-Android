@@ -20,6 +20,49 @@ class WebDiagnosticsTest {
     @Before
     fun reset() {
         DiagLog.clear()
+        WebDiagnostics.resetFileSinkForTest()
+    }
+
+    @Test
+    fun `file sink persists log lines for the diagnostics export`() {
+        val dir = java.nio.file.Files.createTempDirectory("webdiag-test").toFile()
+        try {
+            WebDiagnostics.initFileSink(dir)
+            WebDiagnostics.log("js", "error: task-group.service-unavailable")
+            WebDiagnostics.log("webview", "second line")
+            val tail = WebDiagnostics.fileSinkTail(10)
+            assertEquals(2, tail.size)
+            assertTrue(tail[0].contains("task-group.service-unavailable"))
+            assertTrue(tail[1].contains("second line"))
+            val f = java.io.File(java.io.File(dir, "logs"), "webconsole.log")
+            assertTrue(f.isFile)
+            assertTrue(f.readText().contains("[js]"))
+        } finally {
+            WebDiagnostics.resetFileSinkForTest()
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `file sink rotates instead of growing unbounded`() {
+        val dir = java.nio.file.Files.createTempDirectory("webdiag-test").toFile()
+        try {
+            WebDiagnostics.initFileSink(dir)
+            // ~140 bytes per line: 6000 lines clear the 512 KiB cap twice over.
+            repeat(6000) { WebDiagnostics.log("js", "pad-" + "y".repeat(100)) }
+            val logs = java.io.File(dir, "logs")
+            assertTrue(java.io.File(logs, "webconsole.log.old").isFile)
+            assertTrue(java.io.File(logs, "webconsole.log").isFile)
+            assertTrue(java.io.File(logs, "webconsole.log").length() <= 600 * 1024)
+        } finally {
+            WebDiagnostics.resetFileSinkForTest()
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `file sink tail is empty when never initialized`() {
+        assertTrue(WebDiagnostics.fileSinkTail(10).isEmpty())
     }
 
     @Test

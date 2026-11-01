@@ -13,12 +13,18 @@ import android.util.Log
  * Those signals live on the UI side and were previously discarded (a bare
  * WebViewClient with no callbacks, no WebChromeClient).
  *
- * Every line goes to three sinks:
+ * Every line goes to four sinks:
  *  1. [DiagLog] — own ring buffer, so a chatty frontend boot can NOT evict
  *     these lines from the exported diagnostics (RuntimeBus keeps only 400
  *     lines and the export shows the last 150);
  *  2. [RuntimeBus] — the live "Runtime log" console on the status screen;
- *  3. logcat tag "ZCodeWeb" — so CI emulator stages and adb users can grep it.
+ *  3. logcat tag "ZCodeWeb" — so CI emulator stages and adb users can grep it;
+ *  4. [fileSink] — `files/logs/webconsole.log` (rotated at 512 KiB to
+ *     `.old`). In-memory sinks die with the process and logcat rotates, but
+ *     the failure classes that matter (sticky web-UI error toasts such as
+ *     "Group action failed", whose client-side `J.error` output never
+ *     reaches any server log) are reported by the user some time AFTER they
+ *     happened, often across an app restart. The file keeps that evidence.
  *
  * Privacy: no cookies, no tokens, no authorization headers, no page content
  * beyond a short plain-text snapshot of the UI shell — see the DOM-state probe.
@@ -27,12 +33,70 @@ object WebDiagnostics {
 
     const val LOGCAT_TAG = "ZCodeWeb"
 
+    private const val MAX_FILE_BYTES = 512 * 1024
+
+    private val sinkLock = Any()
+    private var sinkFile: java.io.File? = null
+
+    /**
+     * Install the persisted sink. Called once from the WebView host; safe to
+     * call again (re-does nothing). Pure java.io — keeps the sink testable
+     * on the CI JVM like [DiagLog].
+     */
+    fun initFileSink(filesDir: java.io.File) {
+        synchronized(sinkLock) {
+            if (sinkFile != null) return
+            val logs = java.io.File(filesDir, "logs").apply { mkdirs() }
+            sinkFile = java.io.File(logs, "webconsole.log")
+        }
+    }
+
+    /** Test hook: detach the sink (does not delete the file). */
+    fun resetFileSinkForTest() {
+        synchronized(sinkLock) { sinkFile = null }
+    }
+
     fun log(tag: String, message: String) {
         val line = "[$tag] ${message.replace("\n", " ⏎ ")}"
         DiagLog.append(line)
         RuntimeBus.append(line)
         runCatching { Log.i(LOGCAT_TAG, line) }
+        appendToSink(line)
     }
+
+    private fun appendToSink(line: String) {
+        val file = sinkFile ?: return
+        try {
+            synchronized(sinkLock) {
+                if (file.length() > MAX_FILE_BYTES) {
+                    val old = java.io.File(file.parentFile, "webconsole.log.old")
+                    if (old.exists()) old.delete()
+                    file.renameTo(old)
+                }
+                file.appendText("${ts()} $line\n")
+            }
+        } catch (_: Throwable) {
+            // Evidence must never crash the UI; drop the line instead.
+        }
+    }
+
+    /** Last persisted lines for the diagnostics export (oldest first). */
+    fun fileSinkTail(maxLines: Int): List<String> {
+        val file = sinkFile ?: return emptyList()
+        return runCatching {
+            if (!file.isFile) return emptyList()
+            val lines = file.readLines()
+            val old = java.io.File(file.parentFile, "webconsole.log.old")
+            if (old.isFile && lines.size < maxLines) {
+                return (old.readLines() + lines).takeLast(maxLines)
+            }
+            lines.takeLast(maxLines)
+        }.getOrDefault(emptyList())
+    }
+
+    private fun ts(): String =
+        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+            .format(java.util.Date())
 
     /**
      * Identify the system WebView implementation and version. A very old
