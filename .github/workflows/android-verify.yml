@@ -188,6 +188,7 @@ jobs:
              scripts/embedded/assets/register-workspace-project.cjs \
              scripts/embedded/assets/verify-second-send.cjs \
              scripts/embedded/assets/tls-diagnose.cjs \
+             scripts/embedded/assets/oauth-flow-probe.cjs \
              scripts/embedded/assets/cacert.pem android/app/src/main/assets/runtime/bionic/
           cp "${{ steps.dist.outputs.tarball }}" android/app/src/main/assets/runtime/zcode-dist.tgz
           echo "${{ steps.dist.outputs.sha256 }}" > android/app/src/main/assets/runtime/zcode-dist.sha256
@@ -215,6 +216,7 @@ jobs:
             assets/runtime/bionic/register-workspace-project.cjs \
             assets/runtime/bionic/verify-second-send.cjs \
             assets/runtime/bionic/tls-diagnose.cjs \
+            assets/runtime/bionic/oauth-flow-probe.cjs \
             assets/runtime/bionic/cacert.pem ; do
             unzip -Z1 "$APK" | grep -qx "$entry" || { echo "FATAL: $entry missing from APK"; exit 1; }
           done
@@ -793,6 +795,14 @@ jobs:
             done
             adb logcat -d | grep -E "\[tls\]|TLS-DIAGNOSE-" | tail -12 || true
             [ "$TLSWAIT" = "1" ] || echo "WARN: app-start TLS probe produced no logcat lines within 60s (dedicated tls-zai stage is the gate)"
+            echo "--- OAuth device-flow probe evidence (app-start, no credentials) ---"
+            OAUTHWAIT=0
+            for i in $(seq 1 20); do
+              if adb logcat -d | grep -q "OAUTH-FLOW-PROBE-"; then OAUTHWAIT=1; break; fi
+              sleep 3
+            done
+            adb logcat -d | grep -E "\[oauth\]|OAUTH-FLOW-PROBE-" | tail -10 || true
+            [ "$OAUTHWAIT" = "1" ] || echo "WARN: app-start OAuth probe produced no logcat lines within 60s (dedicated oauth-flow stage is the gate)"
             echo "--- app log (logcat tail, app tag) ---"
             adb logcat -d | grep -E "zcode|agent\||mock\|" | tail -25 || true
           '
@@ -1134,6 +1144,30 @@ jobs:
               || { echo "FAIL: api.z.ai certificate chain did NOT verify under the embedded runtime"; exit 1; }
           '
 
+      - name: oauth-flow | login device-flow init+poll against zcode.z.ai (network ON, NO credentials)
+        run: |
+          # Owner report (2026-10-31): the agent only works in "start free"
+          # mode — full Z AI login never completes on the phone. The
+          # standalone web UI's login is a SERVER-side device flow
+          # (oauthService.startOAuthWithPolling): POST /api/v1/oauth/cli/init,
+          # then GET /oauth/cli/poll/:flowId until the browser authorization
+          # lands ready. This stage drives exactly those two endpoints inside
+          # the app's runtime env with a locally generated anonymous poll
+          # token: it proves the embedded runtime can reach zcode.z.ai over
+          # verified TLS and start/poll a login flow. No user credentials are
+          # involved and no authorization can complete (nothing approves the
+          # throwaway flow). On the ARM64 phone the same probe runs at every
+          # server start ([oauth] logcat lines, tag ZCodeWeb) — the next
+          # device run names the failing login layer (network/TLS vs UI).
+          # x86_64 AVD app-level evidence only.
+          source /tmp/verify-stage-lib.sh
+          adb push scripts/embedded/assets/oauth-flow-probe.cjs /data/local/tmp/verify-oauth-flow.cjs > /dev/null
+          stage_run oauth-flow -- bash -c '
+            set -e
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-oauth-flow.cjs | tee /dev/stderr | grep -q "OAUTH-FLOW-PROBE-OK" \
+              || { echo "FAIL: login device-flow init/poll did not complete under the embedded runtime"; exit 1; }
+          '
+
       - name: report | classification summary (owner rules, no auto-PRoot)
         if: always()
         run: |
@@ -1141,7 +1175,7 @@ jobs:
           import json, os, sys
           d = sys.argv[1]
           stages = ["install", "offline", "setup-tap", "node-probe", "openssl-offline", "start-tap",
-                    "frontend-smoke", "dark-mode", "agent-loop", "agent-effects", "second-send", "persistence", "net-restore", "tls-https", "tls-zai", "emu-boot"]
+                    "frontend-smoke", "dark-mode", "agent-loop", "agent-effects", "second-send", "persistence", "net-restore", "tls-https", "tls-zai", "oauth-flow", "emu-boot"]
           rows = []
           for s in stages:
               p = os.path.join(d, s + ".json")
@@ -1164,6 +1198,7 @@ jobs:
               "net-restore": "test precondition for tls-https (not a device criterion)",
               "tls-https": "real HTTPS with certificate verification enabled (failure-2 acceptance; x86_64 AVD app-level evidence only)",
               "tls-zai": "provider endpoint (api.z.ai) certificate verification with the app-shipped CA bundle wired (MODEL_TLS_VALIDATION_FAILED acceptance; x86_64 AVD app-level evidence only; ARM64 device verdict = on-phone [tls] logcat probe)",
+              "oauth-flow": "login device-flow init+poll (zcode.z.ai) with a locally generated anonymous poll token — NO credentials, no authorization completes (owner report: full login never completes, start-free only; x86_64 AVD app-level evidence only; ARM64 device verdict = on-phone [oauth] logcat probe)",
               "emu-boot": "workflow/setup — fix the test, never a Bionic verdict",
           }
           print(json.dumps({"scope": "x86_64 AVD app-level only; ARM64/device NOT proven here",

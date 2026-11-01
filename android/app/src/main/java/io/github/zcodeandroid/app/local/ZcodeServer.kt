@@ -240,6 +240,7 @@ object ZcodeServer {
                 )
                 RuntimeBus.setState(RuntimeState.Running(url))
                 runTlsDiagnose(app)
+                runOAuthFlowProbe(app)
                 registerWorkspaceProject(app)
                 return
             }
@@ -303,6 +304,61 @@ object ZcodeServer {
                 )
             } catch (t: Throwable) {
                 RuntimeBus.append("tls diagnose error: ${t.message}")
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    /**
+     * OAuth login-path self-probe. Owner report (2026-10-31): the agent only
+     * works in "start free" mode — full Z AI login never completes. The
+     * standalone web UI's login is a SERVER-side device flow
+     * (oauthService.startOAuthWithPolling): POST /api/v1/oauth/cli/init, then
+     * GET /oauth/cli/poll/:flowId until the browser authorization lands
+     * ready. This probe drives exactly those two endpoints under the app
+     * runtime env with a locally generated anonymous poll token: NO
+     * credentials are involved, no authorization can complete, nothing is
+     * stored. Failure here (TLS to zcode.z.ai, envelope rejection) names the
+     * failing login layer before the UI is ever involved. Diagnostic only:
+     * never fails the server start. Marker lines OAUTH-FLOW-PROBE-OK/FAIL;
+     * "[oauth]" lines are mirrored to logcat (tag ZCodeWeb) for on-device
+     * evidence.
+     */
+    private fun runOAuthFlowProbe(app: Context) {
+        val script = Provisioner.ensureKitScript(app, "oauth-flow-probe.cjs")
+        if (script == null) {
+            RuntimeBus.append("oauth probe skipped: script not staged")
+            return
+        }
+        Thread {
+            try {
+                val command = listOf(
+                    RuntimePaths.nodeBin(app).absolutePath,
+                    script.absolutePath
+                )
+                RuntimeBus.append("oauth probe: device-flow init+poll (no credentials involved)")
+                val pb = ProcessBuilder(command)
+                pb.redirectErrorStream(true)
+                Provisioner.applyBionicEnv(pb.environment(), app)
+                val proc = pb.start()
+                Thread {
+                    try {
+                        proc.inputStream.bufferedReader().use { r: BufferedReader ->
+                            while (true) {
+                                val line = r.readLine() ?: break
+                                RuntimeBus.append(line)
+                                runCatching { android.util.Log.i("ZCodeWeb", line) }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }.apply { isDaemon = true }.start()
+                val exited = runCatching { proc.waitFor() }
+                WebDiagnostics.log(
+                    "probe",
+                    "oauth probe finished (exit=${exited.getOrDefault(-1)}); " +
+                        "marker line OAUTH-FLOW-PROBE-OK/FAIL is in the log above"
+                )
+            } catch (t: Throwable) {
+                RuntimeBus.append("oauth probe error: ${t.message}")
             }
         }.apply { isDaemon = true }.start()
     }
