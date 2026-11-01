@@ -84,8 +84,13 @@ function procList() {
   try {
     dirs = fs.readdirSync('/proc');
   } catch (_) {
-    return { error: 'readdir /proc failed' };
+    return { error: 'readdir /proc failed', selfPid: process.pid };
   }
+  // Self-visibility marker: with hidepid-style /proc masking, readdir may
+  // hide even same-uid processes on some kernels/emulators. If this collector
+  // cannot see ITSELF (a same-uid node), the process list is "unavailable on
+  // this environment", NOT "no processes" — the two are different claims.
+  let sawSelf = false;
   for (const entry of dirs) {
     const pid = parseInt(entry, 10);
     if (!Number.isInteger(pid) || pid <= 0) continue;
@@ -93,6 +98,7 @@ function procList() {
     if (comm === null) continue;
     const name = comm.trim();
     if (name !== 'node' && name !== 'zcode-cli') continue;
+    if (pid === process.pid) sawSelf = true;
     const status = readIfReadable(`/proc/${entry}/status`) || '';
     const rss = (status.match(/VmRSS:\s+(\d+)\s+kB/) || [])[1] || null;
     const rollup = readIfReadable(`/proc/${entry}/smaps_rollup`) || '';
@@ -100,7 +106,8 @@ function procList() {
     out.push({ pid, comm: name, rssKb: rss, pssKb: pss });
   }
   out.sort((a, b) => a.pid - b.pid);
-  return { count: out.length, units: 'kB', processes: out };
+  const visibility = sawSelf || out.length > 0 ? 'full' : 'masked (same-uid processes not listed by readdir /proc)';
+  return { count: out.length, units: 'kB', visibility, processes: out };
 }
 
 function memInfo() {

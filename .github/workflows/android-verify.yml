@@ -843,22 +843,6 @@ jobs:
             adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-web-api-contract.cjs
           '
 
-      - name: diag-collector | P0 agent-side evidence snapshot (device-side)
-        run: |
-          # P0 of the self-diagnostics study (2026-11): one command that
-          # gathers processes (RSS+PSS), memory, storage, server probes
-          # (incl. /remote), webconsole verdict counters and the persisted
-          # logs into a redacted JSON report. Run here as CI evidence and
-          # shipped as the embedded agent's first diagnostics instrument.
-          source /tmp/verify-stage-lib.sh
-          adb push scripts/embedded/assets/diag-collector.cjs /data/local/tmp/diag-collector.cjs > /dev/null
-          stage_run diag-collector -- bash -c '
-            set -e
-            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/diag-collector.cjs --app-files /data/user/0/'"$PKG"'/files --out /data/user/0/'"$PKG"'/files/logs/diag-snapshot.json
-            adb shell run-as '"$PKG"' cat /data/user/0/'"$PKG"'/files/logs/diag-snapshot.json > "$LOGS_DIR/diag-snapshot.json"
-            python3 /tmp/verify-diag-verdict.py "$LOGS_DIR/diag-snapshot.json"
-          '
-
       - name: frontend-smoke | open WebView, capture console + DOM state + HONEST render verdict
         run: |
           source /tmp/verify-stage-lib.sh
@@ -893,6 +877,23 @@ jobs:
             echo "FRONTEND-SMOKE: evidence collected AND render verdict PASSED"
             ui_tap_text "Status" 30 || adb shell input keyevent KEYCODE_BACK || true
           '
+
+      - name: diag-collector | P0 agent-side evidence snapshot (device-side)
+        run: |
+          # P0 of the self-diagnostics study (2026-11): one command that
+          # gathers processes (RSS+PSS), memory, storage, server probes
+          # (incl. /remote), webconsole verdict counters and the persisted
+          # logs into a redacted JSON report. Run here as CI evidence and
+          # shipped as the embedded agent's first diagnostics instrument.
+          source /tmp/verify-stage-lib.sh
+          adb push scripts/embedded/assets/diag-collector.cjs /data/local/tmp/diag-collector.cjs > /dev/null
+          stage_run diag-collector -- bash -c '
+            set -e
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/diag-collector.cjs --app-files /data/user/0/'"$PKG"'/files --out /data/user/0/'"$PKG"'/files/logs/diag-snapshot.json
+            adb shell run-as '"$PKG"' cat /data/user/0/'"$PKG"'/files/logs/diag-snapshot.json > "$LOGS_DIR/diag-snapshot.json"
+            python3 /tmp/verify-diag-verdict.py "$LOGS_DIR/diag-snapshot.json"
+          '
+
 
       - name: frontend-smoke-b | A/B with edge-to-edge OFF + HONEST render verdict
         run: |
