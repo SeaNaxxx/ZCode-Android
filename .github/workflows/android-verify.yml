@@ -189,6 +189,8 @@ jobs:
              scripts/embedded/assets/verify-second-send.cjs \
              scripts/embedded/assets/tls-diagnose.cjs \
              scripts/embedded/assets/oauth-flow-probe.cjs \
+             scripts/embedded/assets/diag-collector.cjs \
+             scripts/embedded/assets/verify-web-api-contract.cjs \
              scripts/embedded/assets/cacert.pem android/app/src/main/assets/runtime/bionic/
           cp "${{ steps.dist.outputs.tarball }}" android/app/src/main/assets/runtime/zcode-dist.tgz
           echo "${{ steps.dist.outputs.sha256 }}" > android/app/src/main/assets/runtime/zcode-dist.sha256

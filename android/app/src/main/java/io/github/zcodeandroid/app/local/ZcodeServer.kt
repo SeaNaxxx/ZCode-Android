@@ -269,6 +269,10 @@ object ZcodeServer {
                 runTlsDiagnose(app)
                 runOAuthFlowProbe(app)
                 registerWorkspaceProject(app)
+                // P0 diag bridge: stage the agent-side collector even on
+                // installs provisioned before it shipped (ensureKitScript
+                // self-heals a missing kit file from the APK assets).
+                runCatching { Provisioner.ensureKitScript(app, "diag-collector.cjs") }
                 return
             }
             throw IOException(
