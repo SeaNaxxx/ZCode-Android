@@ -1050,11 +1050,15 @@ jobs:
           source /tmp/verify-stage-lib.sh
           stage_run mobile-ui-probe -- bash -c '
             set -e
-            adb shell run-as '"$PKG"' sh -c "echo /remote > /data/user/0/$PKG/files/config-web-url"
+            adb shell run-as '"$PKG"' sh -c "echo /remote > /data/data/$PKG/files/config-web-url"
+            WROTE=$(adb shell run-as '"$PKG"' cat /data/data/$PKG/files/config-web-url | tr -d "\r\n[:space:]")
+            [ "$WROTE" = "/remote" ] || { echo "FAIL: config-web-url write failed (cat-back got: $WROTE)"; exit 1; }
             adb shell am force-stop '"$PKG"' || true
             sleep 3
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
             sleep 6
+            SURVIVED=$(adb shell run-as '"$PKG"' cat /data/data/$PKG/files/config-web-url | tr -d "\r\n[:space:]")
+            [ "$SURVIVED" = "/remote" ] || { echo "FAIL: config-web-url lost across relaunch (got: $SURVIVED)"; exit 1; }
             STARTED=0
             for i in $(seq 1 40); do
               if ui_has_text "Start ZCode"; then ui_tap_text "Start ZCode" 30 || true; fi
@@ -1081,7 +1085,7 @@ jobs:
             if grep -qE "RENDERER GONE|Render process gone" "$LOGS_DIR/mobile-ui-logcat.txt"; then echo "FAIL: renderer died on /remote"; exit 1; fi
             echo "MOBILE-UI-PROBE: /remote booted in the WebView with a live renderer (connection behavior is an observation, see log)"
             # restore the default UI for the stages that follow
-            adb shell run-as '"$PKG"' rm -f /data/user/0/$PKG/files/config-web-url
+            adb shell run-as '"$PKG"' rm -f /data/data/$PKG/files/config-web-url
             adb shell input keyevent KEYCODE_BACK || true
           '
 

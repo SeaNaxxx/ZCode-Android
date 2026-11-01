@@ -423,6 +423,11 @@ private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                         WebDiagnostics.log("webview", "config-web-url override active: $overridden")
                         overridden
                     } else {
+                        WebDiagnostics.log(
+                            "webview",
+                            "config-web-url: not present or not a path (default url) exists=" +
+                                cfg.isFile
+                        )
                         url
                     }
                 }.getOrDefault(url)
