@@ -1050,14 +1050,18 @@ jobs:
           source /tmp/verify-stage-lib.sh
           stage_run mobile-ui-probe -- bash -c '
             set -e
-            # write + verify with the EXACT proven pattern from
-            # frontend-smoke-b (sh -c write, ls check); content is logged for
-            # diagnosis via sh -c cat, never trusted for the gate.
-            adb shell run-as '"$PKG"' sh -c "echo /remote > /data/data/$PKG/files/config-web-url"
-            MARK=$(adb shell run-as '"$PKG"' ls /data/data/$PKG/files/config-web-url | tr -d "\r")
-            [ -n "$MARK" ] || { echo "FAIL: config-web-url not written (ls empty)"; exit 1; }
-            CONTENT=$(adb shell run-as '"$PKG"' sh -c "cat /data/data/$PKG/files/config-web-url" 2>/dev/null | tr -d "\r\n[:space:]")
-            echo "config-web-url content after write: $CONTENT"
+            # Write the config file via push + run-as cp: adb shell drops the
+            # local quoting before the device shell re-parses the line (the
+            # classic adb quoting pitfall — "sh -c \"echo x > f\"" degrades to
+            # "sh -c echo" with the redirect at the wrong level, which is why
+            # the first two attempts produced an EMPTY file the app correctly
+            # ignored). No redirect, no quotes: content is guaranteed.
+            echo /remote > /tmp/config-web-url
+            adb push /tmp/config-web-url /data/local/tmp/config-web-url > /dev/null
+            adb shell run-as '"$PKG"' cp /data/local/tmp/config-web-url /data/data/$PKG/files/config-web-url
+            CONTENT=$(adb shell run-as '"$PKG"' cat /data/data/$PKG/files/config-web-url | tr -d "\r\n[:space:]")
+            [ "$CONTENT" = "/remote" ] || { echo "FAIL: config-web-url content wrong after cp (got: $CONTENT)"; exit 1; }
+            echo "config-web-url staged with content: $CONTENT"
             adb shell am force-stop '"$PKG"' || true
             sleep 3
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
@@ -1091,6 +1095,7 @@ jobs:
             echo "MOBILE-UI-PROBE: /remote booted in the WebView with a live renderer (connection behavior is an observation, see log)"
             # restore the default UI for the stages that follow
             adb shell run-as '"$PKG"' rm -f /data/data/$PKG/files/config-web-url
+            adb shell rm -f /data/local/tmp/config-web-url || true
             adb shell input keyevent KEYCODE_BACK || true
           '
 
