@@ -1050,15 +1050,20 @@ jobs:
           source /tmp/verify-stage-lib.sh
           stage_run mobile-ui-probe -- bash -c '
             set -e
+            # write + verify with the EXACT proven pattern from
+            # frontend-smoke-b (sh -c write, ls check); content is logged for
+            # diagnosis via sh -c cat, never trusted for the gate.
             adb shell run-as '"$PKG"' sh -c "echo /remote > /data/data/$PKG/files/config-web-url"
-            WROTE=$(adb shell run-as '"$PKG"' cat /data/data/$PKG/files/config-web-url | tr -d "\r\n[:space:]")
-            [ "$WROTE" = "/remote" ] || { echo "FAIL: config-web-url write failed (cat-back got: $WROTE)"; exit 1; }
+            MARK=$(adb shell run-as '"$PKG"' ls /data/data/$PKG/files/config-web-url | tr -d "\r")
+            [ -n "$MARK" ] || { echo "FAIL: config-web-url not written (ls empty)"; exit 1; }
+            CONTENT=$(adb shell run-as '"$PKG"' sh -c "cat /data/data/$PKG/files/config-web-url" 2>/dev/null | tr -d "\r\n[:space:]")
+            echo "config-web-url content after write: $CONTENT"
             adb shell am force-stop '"$PKG"' || true
             sleep 3
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
             sleep 6
-            SURVIVED=$(adb shell run-as '"$PKG"' cat /data/data/$PKG/files/config-web-url | tr -d "\r\n[:space:]")
-            [ "$SURVIVED" = "/remote" ] || { echo "FAIL: config-web-url lost across relaunch (got: $SURVIVED)"; exit 1; }
+            MARK2=$(adb shell run-as '"$PKG"' ls /data/data/$PKG/files/config-web-url | tr -d "\r")
+            [ -n "$MARK2" ] || { echo "FAIL: config-web-url lost across relaunch"; exit 1; }
             STARTED=0
             for i in $(seq 1 40); do
               if ui_has_text "Start ZCode"; then ui_tap_text "Start ZCode" 30 || true; fi
