@@ -13,9 +13,20 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import io.github.zcodeandroid.app.local.LocalServerService
+import io.github.zcodeandroid.app.local.Provisioner
 import io.github.zcodeandroid.app.local.RuntimeBus
 import io.github.zcodeandroid.app.local.RuntimeState
 import io.github.zcodeandroid.app.remote.RemoteControlKeepAliveService
@@ -99,6 +110,17 @@ class MainActivity : ComponentActivity() {
         }
         recentLinks = RemoteControlRecentLinksStore.read(this)
         themeMode = prefs.getInt(KEY_THEME_MODE, THEME_SYSTEM)
+        // CI/diagnostic hook (same family as config-edge-to-edge-off): when the
+        // marker exists, the app boots straight into the WebView fallback once
+        // the runtime is Running — the deliberate native path keeps its
+        // buttons out of the product, and the verify stages keep driving the
+        // fallback (web-UI) surface reproducibly.
+        if (runCatching { java.io.File(filesDir, "config-web-fallback").isFile }.getOrDefault(false)) {
+            if (mode == MODE_NATIVE) {
+                mode = MODE_WEB_FALLBACK
+                RuntimeBus.append("web fallback: ON (config-web-fallback marker present — experiment config)")
+            }
+        }
         requestStoragePermissionIfNeeded()
 
         val restoredRemoteUrl = savedInstanceState?.getString(KEY_REMOTE_URL)
@@ -109,6 +131,27 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
+            val runtimeState by RuntimeBus.state.collectAsState()
+            // Silent first-run: ONE owner for provisioning + start so the
+            // native shell and the CI fallback marker can never double-run
+            // extraction. Native and web-fallback modes share it; the
+            // diagnostics (local) and remote modes keep their manual flows.
+            LaunchedEffect(mode) {
+                if (mode == MODE_NATIVE || mode == MODE_WEB_FALLBACK) {
+                    val s = runtimeState
+                    if (s is RuntimeState.NotProvisioned) {
+                        if (Provisioner.isProvisioned(this@MainActivity)) {
+                            RuntimeBus.setState(RuntimeState.Ready)
+                        } else {
+                            Provisioner.provision(this@MainActivity)
+                        }
+                    }
+                    val after = RuntimeBus.state.value
+                    if (after is RuntimeState.Ready || after is RuntimeState.Stopped) {
+                        LocalServerService.start(this@MainActivity)
+                    }
+                }
+            }
             ZcodeTheme(
                 darkTheme = when (themeMode) {
                     THEME_LIGHT -> false
@@ -127,11 +170,24 @@ class MainActivity : ComponentActivity() {
                         onOpenDiagnostics = { mode = MODE_LOCAL },
                     )
                     MODE_WEB_FALLBACK -> {
-                        val running = RuntimeBus.state.value
-                        if (running is RuntimeState.Running) {
-                            LocalWebViewScreen(url = running.url, onExit = { mode = MODE_NATIVE })
-                        } else {
-                            mode = MODE_NATIVE
+                        when (val running = runtimeState) {
+                            is RuntimeState.Running ->
+                                LocalWebViewScreen(url = running.url, onExit = { mode = MODE_NATIVE })
+                            is RuntimeState.Failed -> Column(
+                                modifier = Modifier.fillMaxSize().padding(24.dp),
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                Text(
+                                    "ZCode could not start: ${running.message}",
+                                    color = androidx.compose.material3.MaterialTheme.colorScheme.error,
+                                )
+                            }
+                            else -> Column(
+                                modifier = Modifier.fillMaxSize().padding(24.dp),
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                Text("Preparing ZCode…")
+                            }
                         }
                     }
                     MODE_LOCAL -> LocalApp(

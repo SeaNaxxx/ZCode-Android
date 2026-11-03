@@ -710,33 +710,33 @@ jobs:
             echo "offline precondition OK (8.8.8.8 unreachable) — every later success is download-free"
           '
 
-      - name: setup-tap | drive "Set up local runtime" offline
+      - name: setup-tap | silent first-run provisioning offline (native shell, no tap)
         run: |
+          # Native-shell UX (Phase 2): there is deliberately NO "Set up local
+          # runtime" button — the app provisions silently on first open. The
+          # device-side evidence is unchanged: the provision-complete marker
+          # must appear OFFLINE (embedded assets, airplane mode).
           source /tmp/verify-stage-lib.sh
           stage_run setup-tap -- bash -c '
             set -e
             sleep 10
             dismiss_anr || true
             adb shell am start -n '"$PKG"'/.MainActivity > /dev/null
-            sleep 6
-            shot before-setup
-            adb logcat -c || true
-            ui_tap_text "Set up local runtime" 240 || exit 1
             OK=0
             for i in $(seq 1 160); do
-              if ui_has_text "Ready"; then OK=1; echo "provisioned (Ready) after ~$((i*3))s"; break; fi
-              if ui_has_text "Failed"; then
-                echo "setup FAILED on-device"; ui_dump; grep -o "Failed[^<]*" "$LOGS_DIR/ui-dump.xml" | head -3
-                adb logcat -d | tail -40
-                break
-              fi
+              MARK=$(adb shell run-as '"$PKG"' cat files/runtime/provision-complete.json 2>/dev/null | tr -d "\r")
+              if [ -n "$MARK" ]; then OK=1; echo "provisioned (marker present) after ~$((i*3))s"; break; fi
+              dismiss_anr || true
               sleep 3
             done
+            shot before-setup
             shot after-setup
-            [ "$OK" = "1" ] || { echo "setup did not reach Ready offline"; exit 1; }
+            [ "$OK" = "1" ] || { echo "silent provisioning did not complete offline"; ui_dump; grep -o "Failed[^<]*" "$LOGS_DIR/ui-dump.xml" | head -3; adb logcat -d | tail -40; exit 1; }
+            echo "--- provisioning marker (device-side evidence) ---"
             adb shell run-as '"$PKG"' cat files/runtime/provision-complete.json
-            echo "--- provisioning log lines from device (app RuntimeBus) ---"
-            adb shell run-as '"$PKG"' cat files/runtime/provision-complete.json > /dev/null
+            # Deliberate UX regression guard: the manual setup button must be GONE.
+            if ui_has_text "Set up local runtime"; then echo "FAIL: native shell still shows the manual setup button (silent first-run violated)"; exit 1; fi
+            echo "native first-run: silent provisioning VERIFIED (no setup button, offline)"
           '
 
       - name: node-probe | embedded node really runs (device-side evidence)
@@ -781,21 +781,38 @@ jobs:
               /data/local/tmp/verify-tls-cert.pem /data/local/tmp/verify-tls-key.pem
           '
 
-      - name: start-tap | drive "Start ZCode" (embedded web server + mock provider)
+      - name: start-tap | embedded web server + mock provider (silent auto-start)
         run: |
+          # Native-shell UX: "Start ZCode" is auto — MainActivity starts the
+          # foreground service right after provisioning. The gate is now the
+          # server answering on loopback (device-side HTTP evidence), then the
+          # same registration / TLS / OAuth evidence blocks as before.
           source /tmp/verify-stage-lib.sh
+          cat > /tmp/verify-health.cjs <<'EOF'
+          (async () => {
+            try {
+              const res = await fetch("http://127.0.0.1:3030/", { signal: AbortSignal.timeout(4000) });
+              console.log("HEALTH-STATUS " + res.status + " " + (res.headers.get("content-type") || ""));
+              process.exit(res.status === 200 ? 0 : 1);
+            } catch (e) {
+              console.log("HEALTH-ERR " + (e && e.message));
+              process.exit(2);
+            }
+          })();
+          EOF
+          adb push /tmp/verify-health.cjs /data/local/tmp/verify-health.cjs > /dev/null
           stage_run start-tap -- bash -c '
             set -e
-            ui_tap_text "Start ZCode" 120 || exit 1
             OK=0
             for i in $(seq 1 60); do
-              if ui_has_text "Running"; then OK=1; echo "running after ~$((i*3))s"; break; fi
-              if ui_has_text "Failed"; then echo "start FAILED on-device"; ui_dump; grep -o "Failed[^<]*" "$LOGS_DIR/ui-dump.xml" | head -3; break; fi
+              if adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-health.cjs 2>/dev/null | grep -q "HEALTH-STATUS 200"; then OK=1; echo "server healthy after ~$((i*3))s"; break; fi
               dismiss_anr || true
               sleep 3
             done
             shot running
-            [ "$OK" = "1" ] || exit 1
+            [ "$OK" = "1" ] || { echo "embedded server never answered 200 on loopback"; adb logcat -d | tail -40; exit 1; }
+            # Native shell regression guard: no manual start button anymore.
+            if ui_has_text "Start ZCode"; then echo "FAIL: native shell still shows the manual Start button (silent auto-start violated)"; exit 1; fi
             sleep 3
             # PROJECT REGISTRATION (official saveProject RPC): upstream gives
             # the standalone HTTP server a remote-style storage identity, so
@@ -848,14 +865,21 @@ jobs:
             adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-web-api-contract.cjs
           '
 
-      - name: frontend-smoke | open WebView, capture console + DOM state + HONEST render verdict
+      - name: frontend-smoke | open WebView fallback via marker, capture console + DOM state + HONEST render verdict
         run: |
+          # Native-shell UX: the WebView is the explicit fallback route. The
+          # config-web-fallback marker (CI/diagnostic hook) boots the app
+          # straight into the fallback once the runtime is Running — same
+          # evidence chain as before, minus the removed product buttons.
           source /tmp/verify-stage-lib.sh
           stage_run frontend-smoke -- bash -c '
             set -e
+            adb shell run-as '"$PKG"' sh -c "echo on > /data/data/$PKG/files/config-web-fallback"
+            adb shell am force-stop '"$PKG"' || true
+            sleep 3
+            adb shell am start -n '"$PKG"'/.MainActivity > /dev/null
             adb logcat -c || true
-            ui_tap_text "Open ZCode" 60 || { echo "FAIL: Open ZCode button not found"; exit 1; }
-            echo "tapped Open ZCode; waiting 45s for frontend boot + evidence sequence..."
+            echo "marker staged; waiting 45s for runtime auto-start + frontend boot + evidence sequence..."
             sleep 45
             shot frontend-open
             ui_dump || true
@@ -880,7 +904,6 @@ jobs:
             echo "--- HONEST RENDER VERDICT (green == the UI actually renders) ---"
             python3 /tmp/verify-render-verdict.py "$LOGS_DIR/frontend-smoke-logcat.txt"
             echo "FRONTEND-SMOKE: evidence collected AND render verdict PASSED"
-            ui_tap_text "Status" 30 || adb shell input keyevent KEYCODE_BACK || true
           '
 
       - name: diag-collector | P0 agent-side evidence snapshot (device-side)
@@ -914,19 +937,10 @@ jobs:
             adb shell am force-stop '"$PKG"' || true
             sleep 3
             adb shell am start -n '"$PKG"'/.MainActivity > /dev/null
-            sleep 8
-            ui_tap_text "Start ZCode" 120 || { echo "FAIL: Start ZCode not found (config B)"; exit 1; }
-            OK=0
-            for i in $(seq 1 60); do
-              if ui_has_text "Running"; then OK=1; break; fi
-              if ui_has_text "Failed"; then echo "start FAILED (config B)"; break; fi
-              dismiss_anr || true
-              sleep 3
-            done
-            [ "$OK" = "1" ] || { echo "FAIL: not Running (config B)"; exit 1; }
+            # Native-shell UX: fallback marker (staged in frontend-smoke) boots
+            # the WebView automatically after the silent auto-start.
             adb logcat -c || true
-            ui_tap_text "Open ZCode" 60 || { echo "FAIL: Open ZCode not found (config B)"; exit 1; }
-            sleep 45
+            sleep 55
             shot frontend-b-open
             ui_dump || true
             cp "$LOGS_DIR/ui-dump.xml" "$LOGS_DIR/frontend-smoke-b-ui.xml" 2>/dev/null || true
@@ -995,19 +1009,11 @@ jobs:
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
             sleep 6
             if ui_has_text "send you notifications"; then ui_tap_text "t allow" 10 || true; fi
-            STARTED=0
-            for i in $(seq 1 40); do
-              if ui_has_text "Start ZCode"; then ui_tap_text "Start ZCode" 30 || true; fi
-              if ui_has_text "Running"; then STARTED=1; break; fi
-              dismiss_anr || true
-              sleep 3
-            done
-            [ "$STARTED" = "1" ] || { echo "FAIL: runtime did not reach Running (leg A)"; exit 1; }
-            sleep 3
+            # Native-shell UX: fallback marker boots the WebView after the
+            # silent auto-start; evidence gate is the logcat probe below.
             adb logcat -c || true
-            ui_tap_text "Open ZCode" 60 || true
-            echo "leg A (light): webview open, waiting 40s for probe..."
-            sleep 40
+            echo "leg A (light): webview open, waiting 50s for probe..."
+            sleep 50
             shot dark-legA-light
             adb logcat -d > "$LOGS_DIR/dark-legA-logcat.txt" 2>/dev/null || true
             python3 /tmp/verify-dark-verdict.py "$LOGS_DIR/dark-legA-logcat.txt" light
@@ -1020,18 +1026,9 @@ jobs:
             sleep 2
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
             sleep 6
-            STARTED=0
-            for i in $(seq 1 40); do
-              if ui_has_text "Start ZCode"; then ui_tap_text "Start ZCode" 30 || true; fi
-              if ui_has_text "Running"; then STARTED=1; break; fi
-              dismiss_anr || true
-              sleep 3
-            done
-            [ "$STARTED" = "1" ] || { echo "FAIL: runtime did not reach Running (leg B)"; exit 1; }
-            sleep 3
-            ui_tap_text "Open ZCode" 60 || true
-            echo "leg B (dark): webview open, waiting 40s for probe..."
-            sleep 40
+            adb logcat -c || true
+            echo "leg B (dark): webview open, waiting 50s for probe..."
+            sleep 50
             shot dark-legB-dark
             adb logcat -d > "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null || true
             python3 /tmp/verify-dark-verdict.py "$LOGS_DIR/dark-legB-logcat.txt" dark
@@ -1073,18 +1070,10 @@ jobs:
             sleep 6
             MARK2=$(adb shell run-as '"$PKG"' ls /data/data/$PKG/files/config-web-url | tr -d "\r")
             [ -n "$MARK2" ] || { echo "FAIL: config-web-url lost across relaunch"; exit 1; }
-            STARTED=0
-            for i in $(seq 1 40); do
-              if ui_has_text "Start ZCode"; then ui_tap_text "Start ZCode" 30 || true; fi
-              if ui_has_text "Running"; then STARTED=1; break; fi
-              dismiss_anr || true
-              sleep 3
-            done
-            [ "$STARTED" = "1" ] || { echo "FAIL: runtime did not reach Running (mobile probe)"; exit 1; }
-            sleep 3
+            # Native-shell UX: fallback marker boots the WebView after the
+            # silent auto-start; /remote comes from config-web-url below.
             adb logcat -c || true
-            ui_tap_text "Open ZCode" 60 || { echo "FAIL: Open ZCode not found (mobile probe)"; exit 1; }
-            sleep 45
+            sleep 55
             shot mobile-remote-route
             adb logcat -d > "$LOGS_DIR/mobile-ui-logcat.txt" 2>/dev/null || true
             echo "--- override + navigation trace ---"
@@ -1180,13 +1169,12 @@ jobs:
             fi
             OK=0
             for i in $(seq 1 40); do
-              if ui_has_text "Ready"; then OK=1; break; fi
-              if ui_has_text "Setup required"; then echo "FATAL: app forgot provisioning (marker lost)"; break; fi
+              if adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-health.cjs 2>/dev/null | grep -q "HEALTH-STATUS 200"; then OK=1; break; fi
               dismiss_anr || true
               sleep 3
             done
             shot after-restart
-            [ "$OK" = "1" ] || { echo "FAIL: Ready state not reached after restart"; exit 1; }
+            [ "$OK" = "1" ] || { echo "FAIL: runtime did not re-answer on loopback after restart (native shell)"; adb logcat -d | tail -30; exit 1; }
             AFTER=$(adb shell run-as '"$PKG"' sha256sum files/runtime/provision-complete.json | cut -d" " -f1)
             echo "marker sha after restart:  $AFTER"
             [ "$BEFORE" = "$AFTER" ] || { echo "FAIL: marker changed — re-provision happened"; exit 2; }
