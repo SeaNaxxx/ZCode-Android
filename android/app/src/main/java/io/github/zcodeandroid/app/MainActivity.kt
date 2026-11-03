@@ -86,6 +86,7 @@ class MainActivity : ComponentActivity() {
             android.webkit.WebView.setWebContentsDebuggingEnabled(true)
         }
         recentLinks = RemoteControlRecentLinksStore.read(this)
+        requestStoragePermissionIfNeeded()
 
         val restoredRemoteUrl = savedInstanceState?.getString(KEY_REMOTE_URL)
         val launchRemoteUrl = restoredRemoteUrl ?: resolveRemoteUrlFromIntent(intent)
@@ -196,11 +197,45 @@ class MainActivity : ComponentActivity() {
         requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
     }
 
+    /**
+     * Legacy external storage (targetSdk 28): a granted READ/WRITE pair gives
+     * the embedded runtime full /storage/emulated/0 access. Owner report
+     * 2026-11-02: the runtime could not read /sdcard/Download (workspace
+     * imports, APK analysis inputs). The request fires once at startup;
+     * denial is logged and non-fatal — the app keeps working with
+     * app-private storage only.
+     */
+    private fun requestStoragePermissionIfNeeded() {
+        val missing = arrayOf(
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+        ).filter {
+            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            return
+        }
+        requestPermissions(missing.toTypedArray(), REQUEST_STORAGE)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_STORAGE) {
+            val granted = grantResults.count { it == PackageManager.PERMISSION_GRANTED }
+            RuntimeBus.append("storage permissions: $granted/${grantResults.size} granted")
+        }
+    }
+
     companion object {
         private const val MODE_LOCAL = "local"
         private const val MODE_REMOTE = "remote"
         private const val KEY_REMOTE_URL = "remoteUrl"
         private const val KEY_MODE = "mode"
         private const val REQUEST_NOTIFICATIONS = 4001
+        private const val REQUEST_STORAGE = 4002
     }
 }

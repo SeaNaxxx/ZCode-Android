@@ -8,6 +8,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- targetSdk 28 legacy external storage: runtime-granted READ/WRITE give
+         full /storage/emulated/0 access (owner report 2026-11-02: the runtime
+         could not read /sdcard/Download for workspace imports). -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-feature
         android:name="android.hardware.camera.any"
         android:required="false" />
