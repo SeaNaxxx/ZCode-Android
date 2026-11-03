@@ -1011,9 +1011,18 @@ jobs:
             if ui_has_text "send you notifications"; then ui_tap_text "t allow" 10 || true; fi
             # Native-shell UX: fallback marker boots the WebView after the
             # silent auto-start; evidence gate is the logcat probe below.
+            # POLL for the probe instead of a fixed sleep — the runtime cold
+            # restart after consecutive force-stops varies (observed 10-40s).
             adb logcat -c || true
-            echo "leg A (light): webview open, waiting 50s for probe..."
-            sleep 50
+            OKP=0
+            for i in $(seq 1 40); do
+              adb logcat -d > "$LOGS_DIR/dark-legA-logcat.txt" 2>/dev/null || true
+              if grep -qE "ZCodeWeb.*visual-state: " "$LOGS_DIR/dark-legA-logcat.txt" 2>/dev/null; then OKP=1; echo "pcs probe seen (leg A) after ~$((i*3))s"; break; fi
+              dismiss_anr || true
+              sleep 3
+            done
+            [ "$OKP" = "1" ] || { echo "no visual-state probe within 120s (leg A)"; ui_dump || true; adb logcat -d | tail -30 || true; }
+            echo "leg A (light): webview evidence collected"
             shot dark-legA-light
             adb logcat -d > "$LOGS_DIR/dark-legA-logcat.txt" 2>/dev/null || true
             python3 /tmp/verify-dark-verdict.py "$LOGS_DIR/dark-legA-logcat.txt" light
@@ -1027,8 +1036,15 @@ jobs:
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
             sleep 6
             adb logcat -c || true
-            echo "leg B (dark): webview open, waiting 50s for probe..."
-            sleep 50
+            OKP=0
+            for i in $(seq 1 40); do
+              adb logcat -d > "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null || true
+              if grep -qE "ZCodeWeb.*visual-state: " "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null; then OKP=1; echo "pcs probe seen (leg B) after ~$((i*3))s"; break; fi
+              dismiss_anr || true
+              sleep 3
+            done
+            [ "$OKP" = "1" ] || { echo "no visual-state probe within 120s (leg B)"; ui_dump || true; adb logcat -d | tail -30 || true; }
+            echo "leg B (dark): webview evidence collected"
             shot dark-legB-dark
             adb logcat -d > "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null || true
             python3 /tmp/verify-dark-verdict.py "$LOGS_DIR/dark-legB-logcat.txt" dark
