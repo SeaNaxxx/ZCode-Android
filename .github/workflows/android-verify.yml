@@ -190,6 +190,7 @@ jobs:
              scripts/embedded/assets/tls-diagnose.cjs \
              scripts/embedded/assets/oauth-flow-probe.cjs \
              scripts/embedded/assets/diag-collector.cjs \
+             scripts/embedded/assets/get-rg.cjs \
              scripts/embedded/assets/verify-web-api-contract.cjs \
              scripts/embedded/assets/cacert.pem android/app/src/main/assets/runtime/bionic/
           cp "${{ steps.dist.outputs.tarball }}" android/app/src/main/assets/runtime/zcode-dist.tgz
@@ -680,6 +681,10 @@ jobs:
             # from uiautomator (persistence FAIL in run 40555932163 —
             # screenshot proved Ready state behind the dialog). Pre-grant it.
             adb shell pm grant '"$PKG"' android.permission.POST_NOTIFICATIONS 2>/dev/null || true
+            # targetSdk 28 legacy storage: pre-grant so runtime-permission
+            # dialogs never cover the app window during automated stages.
+            adb shell pm grant '"$PKG"' android.permission.READ_EXTERNAL_STORAGE 2>/dev/null || true
+            adb shell pm grant '"$PKG"' android.permission.WRITE_EXTERNAL_STORAGE 2>/dev/null || true
             adb shell svc power stayon usb || true
             # settle time: SystemUI ANR dialogs right after install covered
             # the app in run #3
@@ -1285,6 +1290,28 @@ jobs:
             set -e
             adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-oauth-flow.cjs | tee /dev/stderr | grep -q "OAUTH-FLOW-PROBE-OK" \
               || { echo "FAIL: login device-flow init/poll did not complete under the embedded runtime"; exit 1; }
+          '
+
+      - name: rg-provision | get-rg.cjs restores ripgrep for the Grep tool (network ON)
+        run: |
+          # The distribution ships no rg binary; the Grep tool resolves it
+          # from PATH (ENGINEERING-NOTES §1). get-rg.cjs downloads the Alpine
+          # musl ripgrep + loader + pcre2/libgcc for the RUNNING arch, builds
+          # a symlink-free kit, and installs a $PREFIX/bin/rg wrapper. Kit
+          # layout + real execution are verified here per arch; ARM64 phone
+          # execution stays a device-protocol gate.
+          source /tmp/verify-stage-lib.sh
+          adb push scripts/embedded/assets/get-rg.cjs /data/local/tmp/get-rg.cjs > /dev/null
+          stage_run rg-provision -- bash -c '
+            set -e
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/get-rg.cjs '"$RT"'/home/rg-kit | tee /dev/stderr | grep -q "kit-ok: rg.sh" \
+              || { echo "FAIL: rg kit build incomplete under the embedded runtime"; exit 1; }
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh "rg" --version | head -1
+            # real search through the PATH wrapper against an existing world-
+            # readable file (no $HOME inside adb double quotes — it expands
+            # in the device shell before verify-run.sh sets it, §5.1 trap)
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh rg -c OPENSSL_CONF /data/local/tmp/verify-run.sh \
+              || { echo "FAIL: PATH-resolved rg did not execute a real search"; exit 1; }
           '
 
       - name: report | classification summary (owner rules, no auto-PRoot)

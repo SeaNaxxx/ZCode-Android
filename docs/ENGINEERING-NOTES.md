@@ -39,7 +39,12 @@ Key properties that make an embedded Android host feasible:
   file tools) therefore does not require glibc natives; the pnpm dependency
   policy itself is glibc-only (`supportedArchitectures.libc: [current, glibc]`).
 - The Grep tool needs an `rg` (ripgrep) binary; the Linux distribution must
-  supply one or resolve it from `PATH`.
+  supply one or resolve it from `PATH`. The embedded distribution ships no
+  `rg`; `scripts/embedded/assets/get-rg.cjs` (staged into the APK with the
+  other runtime assets) provisions it on-device — Alpine musl ripgrep for the
+  running arch + loader + pcre2/libgcc, symlink-free kit, `$PREFIX/bin/rg`
+  wrapper. Download happens at provisioning time, so network is required
+  (the CI `rg-provision` stage verifies kit build and a real search per ABI).
 
 Web mode (what the app embeds):
 
