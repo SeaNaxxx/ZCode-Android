@@ -877,8 +877,8 @@ jobs:
             adb shell run-as '"$PKG"' sh -c "echo on > /data/data/$PKG/files/config-web-fallback"
             adb shell am force-stop '"$PKG"' || true
             sleep 3
-            adb shell am start -n '"$PKG"'/.MainActivity > /dev/null
             adb logcat -c || true
+            adb shell am start -n '"$PKG"'/.MainActivity > /dev/null
             echo "marker staged; waiting 45s for runtime auto-start + frontend boot + evidence sequence..."
             sleep 45
             shot frontend-open
@@ -936,10 +936,11 @@ jobs:
             [ -n "$MARK" ] || { echo "FAIL: marker not written (config B)"; exit 1; }
             adb shell am force-stop '"$PKG"' || true
             sleep 3
+            adb logcat -c || true
             adb shell am start -n '"$PKG"'/.MainActivity > /dev/null
             # Native-shell UX: fallback marker (staged in frontend-smoke) boots
-            # the WebView automatically after the silent auto-start.
-            adb logcat -c || true
+            # the WebView automatically after the silent auto-start. Log is
+            # cleared BEFORE the relaunch so one-shot hook lines are captured.
             sleep 55
             shot frontend-b-open
             ui_dump || true
@@ -1006,6 +1007,7 @@ jobs:
             sleep 2
             adb shell am force-stop '"$PKG"'
             sleep 2
+            adb logcat -c || true
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
             sleep 6
             if ui_has_text "send you notifications"; then ui_tap_text "t allow" 10 || true; fi
@@ -1013,7 +1015,6 @@ jobs:
             # silent auto-start; evidence gate is the logcat probe below.
             # POLL for the probe instead of a fixed sleep — the runtime cold
             # restart after consecutive force-stops varies (observed 10-40s).
-            adb logcat -c || true
             OKP=0
             for i in $(seq 1 40); do
               adb logcat -d > "$LOGS_DIR/dark-legA-logcat.txt" 2>/dev/null || true
@@ -1033,9 +1034,9 @@ jobs:
             sleep 2
             adb shell am force-stop '"$PKG"'
             sleep 2
+            adb logcat -c || true
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
             sleep 6
-            adb logcat -c || true
             OKP=0
             for i in $(seq 1 40); do
               adb logcat -d > "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null || true
@@ -1082,14 +1083,26 @@ jobs:
             echo "config-web-url staged with content: $CONTENT"
             adb shell am force-stop '"$PKG"' || true
             sleep 3
-            adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
-            sleep 6
             MARK2=$(adb shell run-as '"$PKG"' ls /data/data/$PKG/files/config-web-url | tr -d "\r")
             [ -n "$MARK2" ] || { echo "FAIL: config-web-url lost across relaunch"; exit 1; }
-            # Native-shell UX: fallback marker boots the WebView after the
-            # silent auto-start; /remote comes from config-web-url below.
+            # Clear the log BEFORE relaunch: on the emulator the app boots and
+            # creates the override WebView in ~7s, so clearing after the launch
+            # races the one-shot "config-web-url override active" line (run
+            # 41604971411: /remote actually loaded — dom-state href=/remote —
+            # but the hook line predated the clear).
             adb logcat -c || true
-            sleep 55
+            adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
+            # Native-shell UX: fallback marker boots the WebView after the
+            # silent auto-start; /remote comes from config-web-url. POLL for
+            # the finished /remote navigation instead of a fixed sleep.
+            OKN=0
+            for i in $(seq 1 40); do
+              adb logcat -d > "$LOGS_DIR/mobile-ui-logcat.txt" 2>/dev/null || true
+              if grep -q "onPageFinished http://127.0.0.1:3030/remote" "$LOGS_DIR/mobile-ui-logcat.txt" 2>/dev/null; then OKN=1; echo "/remote navigation finished after ~$((i*3))s"; break; fi
+              dismiss_anr || true
+              sleep 3
+            done
+            [ "$OKN" = "1" ] || echo "WARN: /remote onPageFinished not seen within 120s (gates below still apply)"
             shot mobile-remote-route
             adb logcat -d > "$LOGS_DIR/mobile-ui-logcat.txt" 2>/dev/null || true
             echo "--- override + navigation trace ---"
