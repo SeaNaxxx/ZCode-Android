@@ -29,6 +29,9 @@ project tracks behavior in two separate classes:
 
 See [docs/ENGINEERING-NOTES.md](docs/ENGINEERING-NOTES.md) for the
 architecture reference, the verification model, and known failure classes.
+[docs/architecture/](docs/architecture/) holds the component dependency
+audit, the target layer model, and the migration plan for the native
+Android product direction.
 
 ## Building
 
