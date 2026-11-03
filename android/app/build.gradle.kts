@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -45,7 +47,7 @@ android {
             // never committed. When absent, release builds fall back to the
             // debug key (CI builds stay green; release artifacts are only for
             // distribution once the stable key exists).
-            val ksProps = java.util.Properties()
+            val ksProps = Properties()
             val ksPropsFile = rootProject.file("keystore.properties")
             val envStoreFile = System.getenv("ZCODE_RELEASE_STORE_FILE")
             if (ksPropsFile.isFile) {
