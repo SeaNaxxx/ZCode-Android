@@ -45,25 +45,35 @@ without data loss.
 
 ## Phase 2 — Own the agent engine experience
 
-1. Native Compose client speaking the documented protocol
-   (DEPENDENCY-AUDIT section 4): WebSocket `ws://127.0.0.1:3030/ws`,
-   binary frames + tagged serialization, channels `zcode-session`,
-   `zcode-task`, `zcode-agent`, `task-groups`, `project`.
-2. MVP surface: task list, conversation (frame subscription + ranged
-   history), composer (`sendPrompt`), permission prompts
-   (`permission.request(ed)` -> `respondPermission`), model/mode pickers.
-   Keep `This device` as the device concept in all UI strings.
-3. The web UI stays available as a fallback route (existing
-   `config-web-url` mechanism generalizes to a settings toggle). No
-   removal of the WebView before the native client covers the same
-   feature set on-device.
-4. Session persistence: local sessions continue to live under
-   `zcode-data/`; add export/import (workspace + sessions + memory,
-   integrity-checked, schema-versioned) so uninstall + reinstall +
-   restore recovers state. Export never contains credentials.
-5. Sign-in UX in the native shell: server-side device flow, external
-   browser for authorization, register `zcode://oauth/callback` when the
-   native flow owns completion.
+Status 2026-11-03: items 1, 2, 4 and the sign-in half of 5 shipped as the
+Phase 2 MVP (build-verified; on-device chat cycle still pending — exit
+criteria below are the gate, not this list):
+
+1. [SHIPPED, device-pending] Native Compose client speaking the documented
+   protocol (DEPENDENCY-AUDIT section 4): WebSocket `ws://127.0.0.1:3030/ws`,
+   binary frames + tagged serialization (`protocol/Vql.kt`,
+   `protocol/ZcodeRpcClient.kt` — byte-exact against the pinned
+   `packages/rpc` source), channels `project`, `zcode-task`, `oauth`
+   (`native/ZcodeApi.kt`).
+2. [SHIPPED, device-pending] MVP surface: task list, conversation (snapshot
+   history + `onDynamicTaskEvent` live frames), composer (`sendPrompt`),
+   permission prompts (`permission_request` events ->
+   `respondPermission`), theme setting (system/light/dark), `This device`
+   wording throughout (`native/NativeZcodeApp.kt`). Model/mode pickers are
+   wired at API level (`setModel`/`setMode`) and surface in a later
+   iteration of the picker UI.
+3. [SHIPPED] The web UI stays available as an explicit fallback route:
+   settings -> "Open web UI (fallback)" (`LocalWebViewScreen` reused; the
+   proven WebView path is untouched). No removal of the WebView before the
+   native client covers the same feature set on-device.
+4. [SHIPPED, round-trip device-pending] Session persistence: local sessions
+   continue to live under `zcode-data/`; export/import now exists
+   (`backup/ZcodeBackup.kt`): schema-versioned zip + sha256 manifest,
+   credential paths excluded by policy, restore integrity-checked.
+5. [SHIPPED, device-pending] Sign-in UX in the native shell: the oauth
+   channel's `startOAuth` authorize URL opens the external browser,
+   `pollPendingOAuth` completes the loop, `restoreCachedSession` skips
+   sign-in when a session exists; `zcode://oauth` deep link registered.
 
 Exit criteria: a full chat cycle (create task, prompt, stream, permission,
 stop) works on-device through the native UI with the WebView untouched and
