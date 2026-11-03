@@ -12,29 +12,41 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import io.github.zcodeandroid.app.local.RuntimeBus
+import io.github.zcodeandroid.app.local.RuntimeState
 import io.github.zcodeandroid.app.remote.RemoteControlKeepAliveService
 import io.github.zcodeandroid.app.remote.RemoteControlRecentLink
 import io.github.zcodeandroid.app.remote.RemoteControlRecentLinksStore
 import io.github.zcodeandroid.app.remote.RemoteControlUrlPolicy
+import io.github.zcodeandroid.app.native.NativeZcodeApp
 import io.github.zcodeandroid.app.ui.LocalApp
+import io.github.zcodeandroid.app.ui.LocalWebViewScreen
 import io.github.zcodeandroid.app.ui.RemoteControlApp
 import io.github.zcodeandroid.app.ui.theme.ZcodeTheme
 
 /**
- * Entry point. Two modes:
- *  - local (default): provisions and runs the original ZCode distribution in
- *    web mode on-device and shows the official web UI in a WebView.
- *  - remote: the official remote-control client (unchanged upstream behavior).
+ * Entry point. Three modes:
+ *  - native (default): the native ZCode shell — silent first-run, native task
+ *    list + conversation over the pinned channel protocol, Z.ai sign-in via
+ *    the oauth channel. The WebView is NOT part of this path (owner decision);
+ *  - webFallback: explicit "Open web UI (fallback)" from native settings —
+ *    the proven WebView path kept as an escape hatch during migration;
+ *  - local: diagnostics/log console screen (LocalApp);
+ *  - remote: the official remote-control client (deep links only, out of the
+ *    product surface per owner decision; code kept until migration completes).
  * Deep links (zcode://remote, https://zcode.z.ai/remote) open remote mode.
  */
 class MainActivity : ComponentActivity() {
-    private var mode by mutableStateOf(MODE_LOCAL)
+    private var mode by mutableStateOf(MODE_NATIVE)
     private var remoteUrl by mutableStateOf<String?>(null)
     private var recentLinks by mutableStateOf<List<RemoteControlRecentLink>>(emptyList())
+    private var themeMode by mutableStateOf(THEME_SYSTEM)
+
+    private val prefs by lazy { getSharedPreferences("zcode_native", Context.MODE_PRIVATE) }
 
     /**
      * Follow the SYSTEM dark setting explicitly. The runtime architecture
@@ -86,6 +98,7 @@ class MainActivity : ComponentActivity() {
             android.webkit.WebView.setWebContentsDebuggingEnabled(true)
         }
         recentLinks = RemoteControlRecentLinksStore.read(this)
+        themeMode = prefs.getInt(KEY_THEME_MODE, THEME_SYSTEM)
         requestStoragePermissionIfNeeded()
 
         val restoredRemoteUrl = savedInstanceState?.getString(KEY_REMOTE_URL)
@@ -96,25 +109,50 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            ZcodeTheme {
-                if (mode == MODE_LOCAL) {
-                    LocalApp(
+            ZcodeTheme(
+                darkTheme = when (themeMode) {
+                    THEME_LIGHT -> false
+                    THEME_DARK -> true
+                    else -> isSystemInDarkTheme()
+                },
+            ) {
+                when (mode) {
+                    MODE_NATIVE -> NativeZcodeApp(
+                        themeMode = themeMode,
+                        onSetThemeMode = { value ->
+                            themeMode = value
+                            prefs.edit().putInt(KEY_THEME_MODE, value).apply()
+                        },
+                        onOpenWebFallback = { mode = MODE_WEB_FALLBACK },
+                        onOpenDiagnostics = { mode = MODE_LOCAL },
+                    )
+                    MODE_WEB_FALLBACK -> {
+                        val running = RuntimeBus.state.value
+                        if (running is RuntimeState.Running) {
+                            LocalWebViewScreen(url = running.url, onExit = { mode = MODE_NATIVE })
+                        } else {
+                            mode = MODE_NATIVE
+                        }
+                    }
+                    MODE_LOCAL -> LocalApp(
                         onOpenRemote = {
                             mode = MODE_REMOTE
                             openRemoteUrl(BuildConfig.REMOTE_CONTROL_DEFAULT_URL)
-                        }
-                    )
-                } else {
-                    RemoteControlApp(
-                        remoteUrl = remoteUrl,
-                        recentLinks = recentLinks,
-                        onOpenUrl = ::openRemoteUrl,
-                        onCloseRemote = {
-                            closeRemote()
-                            mode = MODE_LOCAL
                         },
-                        onClearRecentLinks = ::clearRecentLinks,
+                        onBackToNative = { mode = MODE_NATIVE },
                     )
+                    else -> {
+                        RemoteControlApp(
+                            remoteUrl = remoteUrl,
+                            recentLinks = recentLinks,
+                            onOpenUrl = ::openRemoteUrl,
+                            onCloseRemote = {
+                                closeRemote()
+                                mode = MODE_NATIVE
+                            },
+                            onClearRecentLinks = ::clearRecentLinks,
+                        )
+                    }
                 }
             }
         }
@@ -137,7 +175,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
         super.onRestoreInstanceState(savedInstanceState)
-        mode = savedInstanceState.getString(KEY_MODE, MODE_LOCAL)
+        mode = savedInstanceState.getString(KEY_MODE, MODE_NATIVE)
     }
 
     override fun onDestroy() {
@@ -231,10 +269,16 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        private const val MODE_NATIVE = "native"
+        private const val MODE_WEB_FALLBACK = "webFallback"
         private const val MODE_LOCAL = "local"
         private const val MODE_REMOTE = "remote"
+        private const val THEME_SYSTEM = 0
+        private const val THEME_LIGHT = 1
+        private const val THEME_DARK = 2
         private const val KEY_REMOTE_URL = "remoteUrl"
         private const val KEY_MODE = "mode"
+        private const val KEY_THEME_MODE = "theme_mode"
         private const val REQUEST_NOTIFICATIONS = 4001
         private const val REQUEST_STORAGE = 4002
     }

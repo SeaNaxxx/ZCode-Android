@@ -77,6 +77,7 @@ import java.util.Locale
 @Composable
 fun LocalApp(
     onOpenRemote: () -> Unit,
+    onBackToNative: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val state by RuntimeBus.state.collectAsState()
@@ -264,6 +265,9 @@ fun LocalApp(
 
         Row(modifier = Modifier.fillMaxWidth()) {
             TextButton(onClick = onOpenRemote) { Text("Remote control (official)") }
+            if (onBackToNative != null) {
+                TextButton(onClick = onBackToNative) { Text("Back to native UI") }
+            }
         }
 
         OutlinedButton(
@@ -375,7 +379,7 @@ private fun LogConsole(lines: List<String>) {
  * touching any credential storage. All evidence goes to WebDiagnostics.
  */
 @Composable
-private fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
+fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
     // Owner directive (2026-10-31): the "ZCode — local" status strip ate a
     // slice of the interface — the official web UI must be FULL-SCREEN. Exit
     // stays available through the system back gesture (BackHandler in

@@ -46,3 +46,7 @@ android/local.properties
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Release signing (never committed; see android/app/build.gradle.kts)
+android/keystore.properties
+keystore.properties

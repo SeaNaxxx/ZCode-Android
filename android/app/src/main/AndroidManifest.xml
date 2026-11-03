@@ -68,6 +68,21 @@
                     android:pathPrefix="/remote"
                     android:scheme="https" />
             </intent-filter>
+            <!-- OAuth callback deep link (dependency audit 3.4): the desktop
+                 client registers zcode://oauth/callback; the native shell owns
+                 sign-in now, so the app must accept the browser handoff. The
+                 oauth channel's authorizeUrl carries the redirect target; the
+                 WebView handoff path in LocalApp.kt continues to work too. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="oauth"
+                    android:scheme="zcode" />
+            </intent-filter>
         </activity>
     </application>
 

@@ -39,7 +39,7 @@ runtime confirmation is UNKNOWN until a second client connects.
 | Release engineering | `build.gradle.kts` (no `signingConfigs`), `android-verify.yml:199,242` (`assembleDebug` only) | Missing | Every distributed APK is debug-signed with a per-runner keystore: update-over-install from a previous run fails (INSTALL_FAILED_UPDATE_INCOMPATIBLE class). Matches the owner-reported upgrade problem |
 | Session persistence across uninstall | runtime `zcode-data/` (`ZCODE_DATA_BASE_DIR`, `BionicEnv.apply`) | Missing (backup/restore) | Data survives app updates (app-private dir kept) but is deleted on uninstall; no export/import exists |
 | Device stats bridge | `local/DiagReport.kt` (mem, node processes) | Missing (battery etc.), partially built | Owner requirement: agent could not read battery via sysfs; public-API bridge added 2026-11 |
-| Native mobile UI | none yet | Missing | Protocol surface documented in section 4; implementation is migration Phase 2 |
+| Native mobile UI | `native/NativeZcodeApp.kt`, `native/ZcodeApi.kt`, `protocol/` | Missing → in progress (2026-11-03) | Phase 2 MVP shipped: silent first-run shell, task list + conversation + composer + permission prompts over the pinned protocol, oauth sign-in, backup/restore. Build-verified only — the on-device chat cycle remains the Phase 2 exit criterion |
 | Terminal (PTY) | upstream `node-pty` (lazy import with catch) | UNKNOWN | Present in the runtime closure but never executed on-device; test before any UI commitment |
 | ADB / Shizuku / REA tooling | none | Out of scope now | Explicit owner non-goal until an independent agent loop exists |
 
@@ -118,11 +118,18 @@ implement, and it is the exact surface `verify-web-api-contract.cjs` and
   payload; every message serialized with a 1-byte type tag (Undefined=0,
   String=1, Buffer=2, VSBuffer=3, Array=4, Object=5, Int=6) and variable
   quantity-length integers (7 bits per byte, little-endian groups).
-- RPC core: RequestType Promise=100 / EventListen=101 / EventDispose=103;
-  ResponseType Initialize=200 / PromiseSuccess=201 / PromiseError=202 /
-  EventFire=203. A request serializes `[type, id, channelName, methodName]`
-  plus the args array; the server answers `[200]` then `[201, data]` or
-  `[202, error]`; events arrive as `[203, id, arg]` frames.
+- RPC core: RequestType Promise=100 / PromiseCancel=101 / EventListen=102 /
+  EventDispose=103; ResponseType Initialize=200 / PromiseSuccess=201 /
+  PromiseError=202 / PromiseErrorObj=203 / EventFire=204. CORRECTION
+  2026-11-03: this section previously listed EventListen=101 and EventFire=203
+  — the values were read from VS Code's upstream, not from this fork. The
+  pinned source (packages/rpc/src/channels.shared.ts at 3c5b227) is
+  authoritative and the values above now match it byte-for-byte. A request
+  serializes `[type, id, channelName, methodName]` plus the positional-args
+  array (ProxyChannel convention: the wire body is the ARRAY of the method's
+  arguments); the server answers `[200]` on open, then `[201, id, data]` or
+  `[202, id, {message,...}]`; events arrive as `[204, listenId, arg]` frames.
+  The Kotlin client (android/.../protocol/) implements exactly this.
 - Channel registry (ServiceChannels, `@zcode/shared`): `zcode-session`,
   `zcode-task`, `zcode-agent`, `task-groups`, `project`, `oauth`, `file`,
   `file-watcher`, `setting`, `terminal`, `git`, `model-selection`,
