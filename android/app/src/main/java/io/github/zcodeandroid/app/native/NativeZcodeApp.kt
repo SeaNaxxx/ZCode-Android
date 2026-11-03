@@ -155,19 +155,9 @@ fun NativeZcodeApp(
             RuntimeBus.setState(RuntimeState.Ready)
         }
     }
-
-    LaunchedEffect(Unit) {
-        // Silent auto-provision + auto-start: the owner-specified flow is
-        // Open -> (permissions already requested by MainActivity) -> ZCode.
-        val s = RuntimeBus.state.value
-        if (s is RuntimeState.NotProvisioned) {
-            Provisioner.provision(context)
-        }
-        val after = RuntimeBus.state.value
-        if (after is RuntimeState.Ready || after is RuntimeState.Stopped) {
-            LocalServerService.start(context)
-        }
-    }
+    // Provisioning + server start are owned by MainActivity (single owner, so
+    // the native shell and the CI web-fallback marker can never double-run
+    // extraction). This composable only renders the runtime state machine.
 
     when (val s = state) {
         is RuntimeState.NotProvisioned, is RuntimeState.Provisioning, is RuntimeState.Starting ->
