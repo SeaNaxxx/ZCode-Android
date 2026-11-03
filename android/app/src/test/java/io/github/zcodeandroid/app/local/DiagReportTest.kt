@@ -47,6 +47,7 @@ class DiagReportTest {
             processes = listOf("pid=1071 comm=node rssKb=210000 pssKb=90000"),
             memAvailableKb = "1800000",
             workspaceFreeBytes = 53_000_000_000L,
+            battery = listOf("percent=87", "status=discharging", "tempC=28.5"),
         )
         // org.json is stubbed (throws) on the CI JVM, so the JSON shape is
         // asserted structurally by hand here; CI on-device stages parse it.
@@ -57,6 +58,18 @@ class DiagReportTest {
         assertTrue(json.contains("\"workspaceFreeBytes\": 53000000000"))
         assertTrue(json.contains("pid=1071 comm=node rssKb=210000 pssKb=90000"))
         assertTrue(json.contains("rulesFixed=63"))
+        assertTrue(json.contains("percent=87"))
+        // an absent battery snapshot stays a valid empty array, not null
+        val noBattery = DiagReport.build(
+            state = "Ready",
+            webViewProvider = "",
+            runtimeLogTail = emptyList(),
+            webTail = emptyList(),
+            processes = emptyList(),
+            memAvailableKb = "?",
+            workspaceFreeBytes = 0L,
+        )
+        assertTrue(noBattery.contains("\"battery\": []"))
         // quotes inside values must be escaped, not break the document
         val tricky = DiagReport.build(
             state = "Failed(stage, message with \"quotes\" and \\ backslash)",

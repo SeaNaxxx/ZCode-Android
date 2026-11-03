@@ -5,9 +5,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import io.github.zcodeandroid.app.MainActivity
@@ -72,17 +75,77 @@ class LocalServerService : Service() {
         diagReportLoopStarted = true
         val app = applicationContext
         scope.launch {
-            RuntimeBus.state.collect { DiagReport.write(app.filesDir, WebDiagnostics.webViewProviderInfo(app)) }
+            RuntimeBus.state.collect { DiagReport.write(app.filesDir, WebDiagnostics.webViewProviderInfo(app), batteryStats(app)) }
         }
         scope.launch {
             while (true) {
                 kotlinx.coroutines.delay(300_000L)
-                DiagReport.write(app.filesDir, WebDiagnostics.webViewProviderInfo(app))
+                DiagReport.write(app.filesDir, WebDiagnostics.webViewProviderInfo(app), batteryStats(app))
             }
         }
     }
 
     private var diagReportLoopStarted = false
+
+    /**
+     * Battery snapshot for the agent-facing diag report, from public APIs
+     * only: the sticky ACTION_BATTERY_CHANGED broadcast needs no receiver
+     * lifecycle and no permission. The agent cannot read sysfs power nodes
+     * from its shell (owner device session 2026-10-31), so this is the only
+     * battery evidence path it gets. Empty (never throws) when the system
+     * has not broadcast yet or on the JVM.
+     */
+    private fun batteryStats(context: Context): List<String> {
+        val intent = runCatching {
+            context.registerReceiver(null as BroadcastReceiver?, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        }.getOrNull() ?: return emptyList()
+        val stats = ArrayList<String>(6)
+        val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+        if (level >= 0 && scale > 0) {
+            stats.add("percent=" + (level * 100) / scale)
+        }
+        val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+        stats.add(
+            "status=" + when (status) {
+                BatteryManager.BATTERY_STATUS_CHARGING -> "charging"
+                BatteryManager.BATTERY_STATUS_FULL -> "full"
+                BatteryManager.BATTERY_STATUS_DISCHARGING -> "discharging"
+                BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "not-charging"
+                BatteryManager.BATTERY_STATUS_UNKNOWN -> "unknown"
+                else -> "unknown"
+            }
+        )
+        val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)
+        stats.add(
+            "plugged=" + when (plugged) {
+                BatteryManager.BATTERY_PLUGGED_AC -> "ac"
+                BatteryManager.BATTERY_PLUGGED_USB -> "usb"
+                BatteryManager.BATTERY_PLUGGED_WIRELESS -> "wireless"
+                else -> "none"
+            }
+        )
+        val temp = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+        if (temp != Int.MIN_VALUE) {
+            stats.add("tempC=" + temp / 10.0)
+        }
+        val voltage = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1)
+        if (voltage > 0) {
+            stats.add("voltageV=" + voltage / 1000.0)
+        }
+        val health = intent.getIntExtra(BatteryManager.EXTRA_HEALTH, -1)
+        stats.add(
+            "health=" + when (health) {
+                BatteryManager.BATTERY_HEALTH_GOOD -> "good"
+                BatteryManager.BATTERY_HEALTH_OVERHEAT -> "overheat"
+                BatteryManager.BATTERY_HEALTH_DEAD -> "dead"
+                BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "over-voltage"
+                BatteryManager.BATTERY_HEALTH_COLD -> "cold"
+                else -> "unknown"
+            }
+        )
+        return stats
+    }
 
     /**
      * Single decision point for "is the runtime running, and who owns it".

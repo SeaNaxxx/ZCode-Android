@@ -98,7 +98,8 @@ object DiagReport {
 
     /**
      * Build the report JSON (pure function of its inputs; JVM-testable).
-     * webViewProvider and runtimeLog/webTails may be empty on the CI JVM.
+     * webViewProvider, runtimeLog/webTails and battery may be empty on the
+     * CI JVM.
      */
     fun build(
         state: String,
@@ -108,6 +109,7 @@ object DiagReport {
         processes: List<String>,
         memAvailableKb: String,
         workspaceFreeBytes: Long,
+        battery: List<String> = emptyList(),
     ): String {
         val sb = StringBuilder(4096)
         sb.append("{\n")
@@ -117,6 +119,7 @@ object DiagReport {
         sb.append("  \"memAvailableKb\": \"").append(jsonStr(memAvailableKb)).append("\",\n")
         sb.append("  \"workspaceFreeBytes\": ").append(workspaceFreeBytes.coerceAtLeast(0)).append(",\n")
         sb.append("  \"processes\": ").append(jsonArray(processes)).append(",\n")
+        sb.append("  \"battery\": ").append(jsonArray(battery)).append(",\n")
         sb.append("  \"runtimeLogTail\": ").append(jsonArray(runtimeLogTail)).append(",\n")
         sb.append("  \"webConsoleTail\": ").append(jsonArray(webTail)).append("\n")
         sb.append("}\n")
@@ -127,7 +130,7 @@ object DiagReport {
      * Write the report for the current runtime. Never throws; on any failure
      * the previous report stays on disk (its `ts` shows its age).
      */
-    fun write(filesDir: File, webViewProvider: String) {
+    fun write(filesDir: File, webViewProvider: String, battery: List<String> = emptyList()) {
         try {
             val ws = File(filesDir, "workspace")
             val json = build(
@@ -138,6 +141,7 @@ object DiagReport {
                 processes = nodeProcessStats(),
                 memAvailableKb = memAvailableKb(),
                 workspaceFreeBytes = runCatching { ws.usableSpace }.getOrDefault(0L),
+                battery = battery,
             )
             val tmp = File(reportFile(filesDir).parentFile, "diag-report.json.tmp")
             tmp.writeText(json)
