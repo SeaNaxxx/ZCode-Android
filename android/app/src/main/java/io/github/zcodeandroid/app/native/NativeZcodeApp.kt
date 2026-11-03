@@ -547,7 +547,8 @@ private class WorkspaceHolder(val context: android.content.Context, private val 
         }.onFailure { RuntimeBus.append("respondPermission failed: ${it.message}") }
     }
 
-    suspend fun stop() {
+    /** Ask the agent to stop generating for the selected task (stopGeneration RPC). */
+    suspend fun stopGeneration() {
         val taskId = selectedTaskId ?: return
         runCatching {
             withContext(Dispatchers.IO) { api.stopGeneration(workspacePath, taskId) }
@@ -707,7 +708,7 @@ private fun ZcodeWorkspaceScreen(
                                     scope.launch { holder.send(text) }
                                 }
                             },
-                            onStop = { scope.launch { holder.stop() } },
+                            onStop = { scope.launch { holder.stopGeneration() } },
                             onRespond = { req, opt, dec ->
                                 scope.launch { holder.respondPermission(req, opt, dec) }
                             },

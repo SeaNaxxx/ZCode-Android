@@ -54,13 +54,13 @@ class ZcodeRpcClient(
 ) {
     enum class Conn { IDLE, CONNECTING, READY, CLOSED }
 
-    data class RpcError(
-        val message: String,
+    class RpcError(
+        detailMessage: String,
         val name: String? = null,
         val code: Any? = null,
         val kind: Any? = null,
         val traceId: Any? = null,
-    ) : Exception(message)
+    ) : Exception(detailMessage)
 
     private val _conn = MutableStateFlow(Conn.IDLE)
     val conn: StateFlow<Conn> = _conn.asStateFlow()
@@ -235,7 +235,7 @@ class ZcodeRpcClient(
 
     private fun sendFrame(payload: ByteArray) {
         val frame = ByteArray(13 + payload.size)
-        frame[0] = MSG_REGULAR
+        frame[0] = MSG_REGULAR.toByte()
         writeU32BE(frame, 1, 0) // id
         writeU32BE(frame, 5, 0) // ack
         writeU32BE(frame, 9, payload.size)
@@ -291,7 +291,7 @@ class ZcodeRpcClient(
                                 pendingCall?.onComplete?.invoke(
                                     Result.failure(
                                         RpcError(
-                                            message = m?.get("message") as? String ?: "RPC error",
+                                            detailMessage = m?.get("message") as? String ?: "RPC error",
                                             name = m?.get("name") as? String,
                                             code = m?.get("code"),
                                             kind = m?.get("kind"),
