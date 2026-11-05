@@ -869,46 +869,38 @@ jobs:
             adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-web-api-contract.cjs
           '
 
-      - name: frontend-smoke | open the web UI surface, capture console + DOM state + HONEST render verdict
+      - name: frontend-smoke | native product surface renders (Compose conversation)
         run: |
-          # Unified product surface (owner decision 2026-11-04): the WebView
-          # IS the app — the config-web-fallback marker is kept staged for
-          # stage compatibility but is a no-op by construction (there is no
-          # native path to fall back FROM anymore). Same evidence chain as
-          # before: console, DOM state, invisible render probes, verdict.
+          # Native-only product surface (owner decision 2026-11-05, REVISED
+          # architecture §5 Phase 2): the product is the Compose conversation
+          # screen backed by the local runtime. Evidence: the screen's own
+          # "NativeConversation surface visible" logcat marker and a
+          # fatal-free launch. The WebView is no longer a product surface.
           source /tmp/verify-stage-lib.sh
           stage_run frontend-smoke -- bash -c '
             set -e
-            adb shell run-as '"$PKG"' sh -c "echo on > /data/data/$PKG/files/config-web-fallback"
             adb shell am force-stop '"$PKG"' || true
             sleep 3
             adb logcat -c || true
             adb shell am start -n '"$PKG"'/.MainActivity > /dev/null
-            echo "marker staged; waiting 45s for runtime auto-start + frontend boot + evidence sequence..."
-            sleep 45
+            OKN=0
+            for i in $(seq 1 40); do
+              adb logcat -d > "$LOGS_DIR/frontend-smoke-logcat.txt" 2>/dev/null || true
+              if grep -q "NativeConversation surface visible" "$LOGS_DIR/frontend-smoke-logcat.txt" 2>/dev/null; then OKN=1; echo "native surface visible after ~$((i*3))s"; break; fi
+              dismiss_anr || true
+              sleep 3
+            done
             shot frontend-open
             ui_dump || true
-            # preserve the dump of THIS stage (later stages overwrite ui-dump.xml)
             cp "$LOGS_DIR/ui-dump.xml" "$LOGS_DIR/frontend-smoke-ui.xml" 2>/dev/null || true
-            python3 /tmp/verify-webview-bounds.py || true
-            if grep -q "android.webkit.WebView" "$LOGS_DIR/ui-dump.xml" 2>/dev/null; then
-              echo "WebView node present in UI dump"
-            else
-              echo "WARN: no android.webkit.WebView node in UI dump"
-            fi
+            [ "$OKN" = "1" ] || { echo "FAIL: native conversation surface never appeared"; adb logcat -d | tail -40; exit 1; }
             adb logcat -d > "$LOGS_DIR/frontend-smoke-logcat.txt" 2>/dev/null || true
-            echo "--- JS console (chromium CONSOLE lines) ---"
-            grep -E "INFO:CONSOLE|:CONSOLE" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -40 || true
             echo "--- fatal UI signals ---"
-            grep -E "Uncaught|SyntaxError|ReferenceError|net::ERR|Render process gone|RENDERER GONE" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -20 || true
-            echo "--- app-side webview evidence (ZCodeWeb tag: lifecycle + dom-state + probes) ---"
-            grep "ZCodeWeb" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -60 || true
-            echo "--- visual paint evidence (invisible render probe: visual-state / bitmap) ---"
-            grep -E "visual-state|bitmap|render probe|shot saved|first layout|fallback load" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -45 || true
-            grep -q "android.webkit.WebView" "$LOGS_DIR/ui-dump.xml" 2>/dev/null || { echo "FAIL: WebView absent - evidence could not be collected"; exit 1; }
-            echo "--- HONEST RENDER VERDICT (green == the UI actually renders) ---"
-            python3 /tmp/verify-render-verdict.py "$LOGS_DIR/frontend-smoke-logcat.txt"
-            echo "FRONTEND-SMOKE: evidence collected AND render verdict PASSED"
+            grep -E "FATAL EXCEPTION|Uncaught" "$LOGS_DIR/frontend-smoke-logcat.txt" | tail -10 || true
+            if grep -q "FATAL EXCEPTION" "$LOGS_DIR/frontend-smoke-logcat.txt"; then echo "FAIL: fatal exception on the native surface"; exit 1; fi
+            echo "--- composer present in UI tree ---"
+            grep -q "Message the agent" "$LOGS_DIR/ui-dump.xml" 2>/dev/null && echo "composer found in UI dump" || echo "WARN: composer text not in dump (keyboard state may hide it)"
+            echo "FRONTEND-SMOKE: native surface VERIFIED (ConversationScreen visible, no fatals)"
           '
 
       - name: diag-collector | P0 agent-side evidence snapshot (device-side)
@@ -928,82 +920,15 @@ jobs:
           '
 
 
-      - name: frontend-smoke-b | A/B with edge-to-edge OFF + HONEST render verdict
+      - name: dark-mode | system dark must reach the native surface
         run: |
-          source /tmp/verify-stage-lib.sh
-          stage_run frontend-smoke-b -- bash -c '
-            set -e
-            # CONFIG B: the MainActivity skips enableEdgeToEdge() when this
-            # marker exists (runtime diagnostic hook). The foreground-service
-            # runtime is killed by force-stop, so the full start flow repeats.
-            adb shell run-as '"$PKG"' sh -c "echo off > /data/data/$PKG/files/config-edge-to-edge-off"
-            MARK=$(adb shell run-as '"$PKG"' ls /data/data/$PKG/files/config-edge-to-edge-off | tr -d "\r")
-            [ -n "$MARK" ] || { echo "FAIL: marker not written (config B)"; exit 1; }
-            adb shell am force-stop '"$PKG"' || true
-            sleep 3
-            adb logcat -c || true
-            adb shell am start -n '"$PKG"'/.MainActivity > /dev/null
-            # Native-shell UX: fallback marker (staged in frontend-smoke) boots
-            # the WebView automatically after the silent auto-start. Log is
-            # cleared BEFORE the relaunch so one-shot hook lines are captured.
-            sleep 55
-            shot frontend-b-open
-            ui_dump || true
-            cp "$LOGS_DIR/ui-dump.xml" "$LOGS_DIR/frontend-smoke-b-ui.xml" 2>/dev/null || true
-            adb logcat -d > "$LOGS_DIR/frontend-smoke-b-logcat.txt" 2>/dev/null || true
-            echo "--- CONFIG B (edge-to-edge OFF) visual paint evidence ---"
-            grep -E "visual-state|bitmap|render probe|edge-to-edge|first layout|config C" "$LOGS_DIR/frontend-smoke-b-logcat.txt" | tail -45 || true
-            echo "--- CONFIG B HONEST RENDER VERDICT ---"
-            python3 /tmp/verify-render-verdict.py "$LOGS_DIR/frontend-smoke-b-logcat.txt"
-            echo "CONFIG-B: evidence collected AND render verdict PASSED"
-            # exit the WebView: the status strip was removed (owner directive
-            # 2026-10-31) — the system back gesture is the way out
-            adb shell input keyevent KEYCODE_BACK || true
-          '
-
-      - name: dark-mode | system dark must reach the WebView (A/B with prefers-color-scheme probe)
-        run: |
-          # The app targets SDK 28 (architectural constraint: exec() from app
-          # storage), so the system night mode does NOT arrive in its
-          # Configuration on its own. MainActivity follows UiModeManager
-          # explicitly and night-qualifies the base context, which is what the
-          # WebView's prefers-color-scheme is derived from. Measured directly:
-          # the visual-state probe reports pcs.dark / pcs.light (matchMedia) —
-          # the frontend's own 'dark' class is NOT used as the verdict because
-          # the login UI is dark-styled by default on any system. Honest A/B:
-          # system LIGHT must give pcs.dark=false, system DARK must give
-          # pcs.dark=true.
-          cat > /tmp/verify-dark-verdict.py <<'EOF'
-          import sys, re, json
-          path, want = sys.argv[1], sys.argv[2]  # want = "light" | "dark"
-          log = open(path, errors="replace").read()
-          lines = [l for l in log.splitlines() if "visual-state: " in l and "ZCodeWeb" in l]
-          found = []
-          for l in lines:
-              m = re.search(r"visual-state: \"(.*)\"", l)
-              if not m:
-                  continue
-              try:
-                  d = json.loads(m.group(1).encode("utf-8").decode("unicode_escape"))
-              except Exception:
-                  continue
-              pcs = d.get("pcs") or {}
-              if pcs.get("dark") is not None:
-                  found.append(pcs)
-          print("pcs probes found:", found)
-          if not found:
-              print("FAIL: no visual-state pcs evidence in", path)
-              sys.exit(1)
-          last = found[-1]
-          if want == "dark" and last.get("dark") is True:
-              print("DARK-MODE A/B: system dark -> WebView reports prefers-color-scheme: dark. VERIFIED")
-              sys.exit(0)
-          if want == "light" and last.get("dark") is False:
-              print("DARK-MODE A/B: system light -> WebView reports prefers-color-scheme: light. VERIFIED")
-              sys.exit(0)
-          print("FAIL: want", want, "got", last)
-          sys.exit(1)
-          EOF
+          # targetSdk 28 (architectural constraint: exec() from app storage):
+          # system night mode does NOT arrive in the app's Configuration on
+          # its own. MainActivity qualifies the base context from
+          # UiModeManager; Compose then picks the dark scheme. The
+          # conversation screen logs "surface visible dark=<bool>" — the A/B
+          # verdict is that marker: system LIGHT -> dark=false, system DARK
+          # -> dark=true.
           source /tmp/verify-stage-lib.sh
           stage_run dark-mode -- bash -c '
             set -e
@@ -1014,26 +939,16 @@ jobs:
             sleep 2
             adb logcat -c || true
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
-            sleep 6
-            if ui_has_text "send you notifications"; then ui_tap_text "t allow" 10 || true; fi
-            # Native-shell UX: fallback marker boots the WebView after the
-            # silent auto-start; evidence gate is the logcat probe below.
-            # POLL for the probe instead of a fixed sleep — the runtime cold
-            # restart after consecutive force-stops varies (observed 10-40s).
-            OKP=0
+            OKA=0
             for i in $(seq 1 40); do
               adb logcat -d > "$LOGS_DIR/dark-legA-logcat.txt" 2>/dev/null || true
-              if grep -qE "ZCodeWeb.*visual-state: " "$LOGS_DIR/dark-legA-logcat.txt" 2>/dev/null; then OKP=1; echo "pcs probe seen (leg A) after ~$((i*3))s"; break; fi
+              if grep -q "surface visible dark=false" "$LOGS_DIR/dark-legA-logcat.txt" 2>/dev/null; then OKA=1; echo "dark=false seen (leg A) after ~$((i*3))s"; break; fi
               dismiss_anr || true
               sleep 3
             done
-            [ "$OKP" = "1" ] || { echo "no visual-state probe within 120s (leg A)"; ui_dump || true; adb logcat -d | tail -30 || true; }
-            echo "leg A (light): webview evidence collected"
             shot dark-legA-light
-            adb logcat -d > "$LOGS_DIR/dark-legA-logcat.txt" 2>/dev/null || true
-            python3 /tmp/verify-dark-verdict.py "$LOGS_DIR/dark-legA-logcat.txt" light
-            adb shell input keyevent KEYCODE_BACK || true
-            sleep 2
+            [ "$OKA" = "1" ] || { echo "FAIL: system light did not render dark=false on the native surface"; adb logcat -d | tail -30; exit 1; }
+            echo "leg A: system light -> native surface dark=false VERIFIED"
             # --- leg B: system DARK ---------------------------------------
             adb shell cmd uimode night yes
             sleep 2
@@ -1041,90 +956,17 @@ jobs:
             sleep 2
             adb logcat -c || true
             adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
-            sleep 6
-            OKP=0
+            OKB=0
             for i in $(seq 1 40); do
               adb logcat -d > "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null || true
-              if grep -qE "ZCodeWeb.*visual-state: " "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null; then OKP=1; echo "pcs probe seen (leg B) after ~$((i*3))s"; break; fi
+              if grep -q "surface visible dark=true" "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null; then OKB=1; echo "dark=true seen (leg B) after ~$((i*3))s"; break; fi
               dismiss_anr || true
               sleep 3
             done
-            [ "$OKP" = "1" ] || { echo "no visual-state probe within 120s (leg B)"; ui_dump || true; adb logcat -d | tail -30 || true; }
-            echo "leg B (dark): webview evidence collected"
             shot dark-legB-dark
-            adb logcat -d > "$LOGS_DIR/dark-legB-logcat.txt" 2>/dev/null || true
-            python3 /tmp/verify-dark-verdict.py "$LOGS_DIR/dark-legB-logcat.txt" dark
             adb shell cmd uimode night no
-          '
-
-      - name: mobile-ui-probe | cheap experiment — boot the upstream mobile route (/remote)
-        run: |
-          # External review condition 6 (2026-11): before choosing any native
-          # shell, test the CHEAPEST mobile-UI option first. Finding (condition 5):
-          # the upstream web bundle ships BOTH UIs — the route /remote boots
-          # the built-in web-remote-control (mobile) entry from the SAME dist
-          # (packages/web/src/web-remote-control + shared
-          # resolveWebRemoteControlRoutePathFromBaseUrl; local server SPA
-          # fallback serves it). This stage boots the WebView on /remote via
-          # the config-web-url hook and RECORDS what happens: navigation,
-          # console, render state, bitmap. HONEST GATE: pass requires the
-          # override to load /remote with a live renderer and captured
-          # evidence; whether the mobile UI fully connects to the LOCAL
-          # server session is an OBSERVATION for the owner, not a gate.
-          source /tmp/verify-stage-lib.sh
-          stage_run mobile-ui-probe -- bash -c '
-            set -e
-            # Write the config file via push + run-as cp: adb shell drops the
-            # local quoting before the device shell re-parses the line (the
-            # classic adb quoting pitfall — "sh -c \"echo x > f\"" degrades to
-            # "sh -c echo" with the redirect at the wrong level, which is why
-            # the first two attempts produced an EMPTY file the app correctly
-            # ignored). No redirect, no quotes: content is guaranteed.
-            echo /remote > /tmp/config-web-url
-            adb push /tmp/config-web-url /data/local/tmp/config-web-url > /dev/null
-            adb shell run-as '"$PKG"' cp /data/local/tmp/config-web-url /data/data/$PKG/files/config-web-url
-            CONTENT=$(adb shell run-as '"$PKG"' cat /data/data/$PKG/files/config-web-url | tr -d "\r\n[:space:]")
-            [ "$CONTENT" = "/remote" ] || { echo "FAIL: config-web-url content wrong after cp (got: $CONTENT)"; exit 1; }
-            echo "config-web-url staged with content: $CONTENT"
-            adb shell am force-stop '"$PKG"' || true
-            sleep 3
-            MARK2=$(adb shell run-as '"$PKG"' ls /data/data/$PKG/files/config-web-url | tr -d "\r")
-            [ -n "$MARK2" ] || { echo "FAIL: config-web-url lost across relaunch"; exit 1; }
-            # Clear the log BEFORE relaunch: on the emulator the app boots and
-            # creates the override WebView in ~7s, so clearing after the launch
-            # races the one-shot "config-web-url override active" line (run
-            # 41604971411: /remote actually loaded — dom-state href=/remote —
-            # but the hook line predated the clear).
-            adb logcat -c || true
-            adb shell monkey -p '"$PKG"' -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
-            # Native-shell UX: fallback marker boots the WebView after the
-            # silent auto-start; /remote comes from config-web-url. POLL for
-            # the finished /remote navigation instead of a fixed sleep.
-            OKN=0
-            for i in $(seq 1 40); do
-              adb logcat -d > "$LOGS_DIR/mobile-ui-logcat.txt" 2>/dev/null || true
-              if grep -q "onPageFinished http://127.0.0.1:3030/remote" "$LOGS_DIR/mobile-ui-logcat.txt" 2>/dev/null; then OKN=1; echo "/remote navigation finished after ~$((i*3))s"; break; fi
-              dismiss_anr || true
-              sleep 3
-            done
-            [ "$OKN" = "1" ] || echo "WARN: /remote onPageFinished not seen within 120s (gates below still apply)"
-            shot mobile-remote-route
-            adb logcat -d > "$LOGS_DIR/mobile-ui-logcat.txt" 2>/dev/null || true
-            echo "--- override + navigation trace ---"
-            grep -E "config-web-url override|onPageStarted|onPageCommitVisible|onPageFinished" "$LOGS_DIR/mobile-ui-logcat.txt" | tail -12 || true
-            echo "--- console + fatal signals ---"
-            grep -E ":CONSOLE" "$LOGS_DIR/mobile-ui-logcat.txt" | tail -20 || true
-            grep -E "Render process gone|RENDERER GONE|Uncaught" "$LOGS_DIR/mobile-ui-logcat.txt" | tail -8 || true
-            echo "--- visual evidence ---"
-            grep -E "visual-state|bitmap\[|dom-state" "$LOGS_DIR/mobile-ui-logcat.txt" | tail -12 || true
-            grep -q "config-web-url override active" "$LOGS_DIR/mobile-ui-logcat.txt" || { echo "FAIL: config-web-url hook did not fire"; exit 1; }
-            grep -q "onPageFinished http://127.0.0.1:3030/remote" "$LOGS_DIR/mobile-ui-logcat.txt" || { echo "FAIL: /remote never finished loading"; exit 1; }
-            if grep -qE "RENDERER GONE|Render process gone" "$LOGS_DIR/mobile-ui-logcat.txt"; then echo "FAIL: renderer died on /remote"; exit 1; fi
-            echo "MOBILE-UI-PROBE: /remote booted in the WebView with a live renderer (connection behavior is an observation, see log)"
-            # restore the default UI for the stages that follow
-            adb shell run-as '"$PKG"' rm -f /data/data/$PKG/files/config-web-url
-            adb shell rm -f /data/local/tmp/config-web-url || true
-            adb shell input keyevent KEYCODE_BACK || true
+            [ "$OKB" = "1" ] || { echo "FAIL: system dark did not render dark=true on the native surface"; adb logcat -d | tail -30; exit 1; }
+            echo "leg B: system dark -> native surface dark=true VERIFIED"
           '
 
       - name: agent-loop | ON-DEVICE agent loop with embedded mock (offline)
@@ -1385,9 +1227,9 @@ jobs:
               "node-probe": "embedded node/git/bash exec on Android userspace (criterion 2; ARM64 proof deferred to device)",
               "openssl-offline": "OpenSSL init inside app runtime + verified TLS handshake, ZERO network (failure-2 acceptance; Termux-path leak = FAIL)",
               "start-tap": "official ZCode --web + embedded mock on-device",
-              "frontend-smoke": "black-screen evidence: WebView lifecycle + JS console + DOM state + INVISIBLE render probe (visual-state/bitmap) — the former visible diagnostic sequence (red flicker) is removed; render verdict is evidence, not CI green",
-              "dark-mode": "system dark reaches the app AND the WebView (owner report 2026-10-31: no dark theme on dark phones; targetSdk-28 night-mode legacy behavior)",
-              "frontend-smoke-b": "edge-to-edge OFF A/B: isolates the WebView viewport-unit collapse trigger (runtime marker, force-stop + full restart)",
+              "frontend-smoke": "native product surface (Compose conversation screen) renders after silent auto-start; marker: NativeConversation surface visible; no fatals (native-only decision 2026-11-05)",
+              "dark-mode": "system dark reaches the app AND the native surface (A/B: light->dark=false, dark->dark=true via the ConversationScreen marker; targetSdk-28 night-mode legacy behavior)",
+              "frontend-smoke-b": "RETIRED with the WebView product surface (native-only 2026-11-05): the viewport-collapse A/B was WebView-specific; edge-to-edge now rides standard Compose insets",
               "agent-loop": "real agent loop end-to-end (mock model; auth/billing NOT exercised)",
               "agent-effects": "agent effects verified on disk (criterion 3 mechanics)",
               "second-send": "second message in the SAME conversation: pre-send resolveSessionDirectories(task, local) must be admitted on the app's own server (owner device defect 2026-10-31: project.host-offline pre-admission; x86_64 AVD app-level evidence only)",
