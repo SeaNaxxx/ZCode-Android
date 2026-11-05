@@ -362,3 +362,31 @@ for the Kotlin integration layer. Runtime host, diagnostics, backup,
 `RuntimeBus`, and Compose-only toolkit findings all carry over. The
 2026-11-04 unified web surface remains the interim product until native
 screens replace it (phased, reviewable, per §11).
+
+------------------------------------------------------------------------
+
+## 11. Addendum — P0 protocol proof status (2026-11-05)
+
+Restored from the 0.5.0 tag per §3 (commit `901cedc`): `protocol/Vql.kt`,
+`protocol/ZcodeRpcClient.kt`, `native/ZcodeApi.kt`, `protocol/VqlTest.kt`
+(JVM codec corpus), okhttp 4.12.0. Honest status labels per §15:
+
+- **Test-verified:** VQL codec round-trips (VqlTest, JVM unit tests, runs
+  in the existing `testDebugUnitTest` CI step).
+- **CI-verified (x86_64 AVD, android-verify `native-protocol` stage,
+  added with this addendum):** one real chat round driven by the Kotlin
+  client — `NativeProtocolProbeTest` launches MainActivity (real silent
+  auto-start path), connects, `createTask` → `sendPrompt` → collects
+  `onDynamicTaskEvent` frames → `respondPermission(allow)` when a
+  `permission_request` arrives → `VERIFY-MOCK-DONE` sentinel from the
+  embedded mock provider; a second concurrent native client runs
+  `project.readProjects` throughout (coexistence with the
+  register-workspace-project machinery). Evidence: logcat tag
+  `NativeProtocolProbe`, marker `NATIVE-PROBE-PASS` with the observed
+  event-type list.
+- **Device-verified:** none yet — ARM64 on-phone chat round remains the
+  open item (emulator ≠ device, per README).
+- **Inference:** permission event shape (`requestId`/`options[]`/
+  `optionId`) is REFERENCED from pinned source; the probe treats any
+  unrecognized shape as log-only evidence, never a guess. Product
+  surface untouched: instrumented test only.

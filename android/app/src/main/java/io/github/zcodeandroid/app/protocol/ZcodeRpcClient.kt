@@ -44,9 +44,10 @@ import kotlin.coroutines.resumeWithException
  * EventListen=102, PromiseErrorObj=203, EventFire=204).
  *
  * HONEST STATUS: the protocol constants and framing are verified against the
- * pinned source and the CI-proven JS client, but this Kotlin client has not
- * yet completed a live chat cycle on-device; treat that as pending device
- * verification (docs/architecture/MIGRATION-PLAN.md Phase 2 exit criteria).
+ * pinned source and the CI-proven JS client. A live chat round driven by this
+ * Kotlin client runs in CI on the x86_64 AVD (android-verify "native-protocol"
+ * stage: sendPrompt -> stream frames -> respondPermission, plus a second
+ * concurrent native client); ARM64 on-device verification remains pending.
  */
 class ZcodeRpcClient(
     private val wsUrl: String,

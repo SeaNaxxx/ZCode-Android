@@ -1183,6 +1183,34 @@ jobs:
               || { echo "FAIL: second-send precondition still rejected (host-offline class)"; exit 1; }
           '
 
+      - name: native-protocol | real chat round through the restored Kotlin WS client
+        run: |
+          # P0 exit evidence (REVISED architecture §5/§15): the restored 0.5.0
+          # stack (Vql + ZcodeRpcClient + ZcodeApi) must complete one REAL
+          # chat round against the embedded mock — sendPrompt -> stream
+          # frames -> respondPermission — driven from Kotlin (instrumented
+          # test), NOT from a JS driver, while a second native WS client runs
+          # project.readProjects concurrently. Product surface untouched.
+          source /tmp/verify-stage-lib.sh
+          adb shell pm grant '"$PKG"' android.permission.POST_NOTIFICATIONS 2>/dev/null || true
+          ( cd android && ./gradlew :app:assembleDebugAndroidTest --no-daemon --stacktrace ) \
+            > "$LOGS_DIR/gradle-androidtest.log" 2>&1 \
+            || { tail -n 200 "$LOGS_DIR/gradle-androidtest.log"; exit 1; }
+          TEST_APK=$(find android/app/build/outputs/apk/androidTest/debug -name '*.apk' | head -1)
+          adb install -r "$TEST_APK" > /dev/null
+          adb logcat -c
+          stage_run native-protocol -- bash -c '
+            set -e
+            adb shell am instrument -w -e class io.github.zcodeandroid.app.NativeProtocolProbeTest \
+              '"$PKG"'.test/androidx.test.runner.AndroidJUnitRunner \
+              | tee /dev/stderr | grep -q "OK (1 test" \
+              || { echo "FAIL: NativeProtocolProbeTest did not pass"; adb logcat -d -s NativeProtocolProbe | tail -80; exit 1; }
+            echo "--- probe evidence (logcat NativeProtocolProbe) ---"
+            adb logcat -d -s NativeProtocolProbe | tail -100
+            adb logcat -d | grep -q "NATIVE-PROBE-PASS" \
+              || { echo "FAIL: NATIVE-PROBE-PASS marker missing from logcat"; exit 1; }
+          '
+
       - name: persistence | force-stop + relaunch (no re-provision, files survive)
         run: |
           source /tmp/verify-stage-lib.sh
@@ -1343,7 +1371,8 @@ jobs:
           import json, os, sys
           d = sys.argv[1]
           stages = ["install", "offline", "setup-tap", "node-probe", "openssl-offline", "start-tap",
-                    "frontend-smoke", "dark-mode", "agent-loop", "agent-effects", "second-send", "persistence", "net-restore", "tls-https", "tls-zai", "oauth-flow", "emu-boot"]
+                    "frontend-smoke", "dark-mode", "agent-loop", "agent-effects", "second-send",
+                    "native-protocol", "persistence", "net-restore", "tls-https", "tls-zai", "oauth-flow", "emu-boot"]
           rows = []
           for s in stages:
               p = os.path.join(d, s + ".json")
@@ -1362,6 +1391,7 @@ jobs:
               "agent-loop": "real agent loop end-to-end (mock model; auth/billing NOT exercised)",
               "agent-effects": "agent effects verified on disk (criterion 3 mechanics)",
               "second-send": "second message in the SAME conversation: pre-send resolveSessionDirectories(task, local) must be admitted on the app's own server (owner device defect 2026-10-31: project.host-offline pre-admission; x86_64 AVD app-level evidence only)",
+              "native-protocol": "P0 exit evidence: real chat round (sendPrompt -> stream frames -> respondPermission) through the restored Kotlin WS client (Vql/ZcodeRpcClient/ZcodeApi) against the embedded mock, with a second concurrent native client (x86_64 AVD app-level evidence only; ARM64 device verdict pending)",
               "persistence": "restart survival, no re-provision (criterion 5 mechanics)",
               "net-restore": "test precondition for tls-https (not a device criterion)",
               "tls-https": "real HTTPS with certificate verification enabled (failure-2 acceptance; x86_64 AVD app-level evidence only)",
