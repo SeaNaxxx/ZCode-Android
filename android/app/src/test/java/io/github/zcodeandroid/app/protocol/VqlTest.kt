@@ -26,12 +26,16 @@ class VqlTest {
 
     @Test
     fun `vql varint encodes known values`() {
-        fun enc(v: Int): ByteArray = ByteArrayOutputStream().also { Vql.writeVql(it, v) }.toByteArray()
-        assertEquals(listOf(0x00), enc(0).toList())
-        assertEquals(listOf(0x01), enc(1).toList())
-        assertEquals(listOf(0x80, 0x01), enc(128).toList())
-        assertEquals(listOf(0xAC, 0x02), enc(300).toList())
-        assertEquals(listOf(0xFF, 0xFF, 0xFF, 0xFF, 0x0F), enc(-1).toList())
+        // ByteArray.toList() yields List<Byte> — map to unsigned Int so the
+        // corpus compares like-for-like with List<Int> literals.
+        fun enc(v: Int): List<Int> =
+            ByteArrayOutputStream().also { Vql.writeVql(it, v) }.toByteArray()
+                .map { it.toInt() and 0xFF }
+        assertEquals(listOf(0x00), enc(0))
+        assertEquals(listOf(0x01), enc(1))
+        assertEquals(listOf(0x80, 0x01), enc(128))
+        assertEquals(listOf(0xAC, 0x02), enc(300))
+        assertEquals(listOf(0xFF, 0xFF, 0xFF, 0xFF, 0x0F), enc(-1))
     }
 
     @Test

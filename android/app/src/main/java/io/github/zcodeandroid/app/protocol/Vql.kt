@@ -215,7 +215,9 @@ internal object Json {
     fun toKotlin(json: String): Any? = when (json.trimStart().firstOrNull()) {
         '{' -> toKotlin(JSONObject(json))
         '[' -> toKotlin(JSONArray(json))
-        else -> JSONObject("{\"v\":$json}").opt("v")
+        // Route through toKotlin(v) so JSON null -> Kotlin null (opt() returns
+        // the JSONObject.NULL sentinel, not null).
+        else -> toKotlin(JSONObject("{\"v\":$json}").opt("v"))
     }
 
     fun toKotlin(v: Any?): Any? = when (v) {
@@ -230,7 +232,32 @@ internal object Json {
             for (i in 0 until v.length()) list.add(toKotlin(v.opt(i)))
             list
         }
+        is Number -> normalizeNumber(v)
         else -> v
+    }
+
+    /**
+     * org.json implementations disagree on number types: the Maven artifact
+     * yields BigDecimal/BigInteger/Integer/Long, the Android framework yields
+     * Integer/Long/Double. Upstream JS has ONE number type. Normalize decoded
+     * numbers so the Kotlin side is identical on JVM tests and device:
+     * integral -> Int (32-bit) or Long, fractional -> Double.
+     */
+    private fun normalizeNumber(n: Number): Any = when (n) {
+        is Int, is Double -> n
+        is Long -> if (n in Int.MIN_VALUE..Int.MAX_VALUE) n.toInt() else n
+        is java.math.BigDecimal -> {
+            val stripped = n.stripTrailingZeros()
+            if (stripped.scale() <= 0) integralOf(stripped.toBigIntegerExact()) else n.toDouble()
+        }
+        is java.math.BigInteger -> integralOf(n)
+        else -> n
+    }
+
+    private fun integralOf(bi: java.math.BigInteger): Any = when {
+        bi.bitLength() <= 31 -> bi.toInt()
+        bi.bitLength() <= 63 -> bi.toLong()
+        else -> bi.toDouble() // beyond Long: JS would already be lossy
     }
 
     /** Decode the upstream nested-Uint8Array marker back to ByteArray (decodeRpcJsonValue). */
