@@ -402,3 +402,21 @@ and the varint test corpus compared `List<Byte>` against `List<Int>`.
 Fixed by normalizing decoded numbers to the JS-like Kotlin types
 (integral → Int/Long, fractional → Double) and routing scalar literals
 through the null-mapping converter (`ae6f05d`). Unit tests CI-green.
+
+### 11.2 Frontend-smoke marker grep defect (runs 41988747804, 41990196616)
+
+Runs 8f03a89 and f8bd34c failed in the `frontend-smoke` stage: the
+stage greps logcat for `NativeConversation surface visible`, but the
+app emits `Log.i("NativeConversation", "surface visible dark=…")`,
+which logcat threadtime renders as `NativeConversation: surface
+visible ...` — the colon makes the space-separated pattern
+unmatchable. Every stage after it (pty-probe, dark-mode, agent-loop,
+agent-effects, second-send, persistence, native-protocol) never ran in
+those two executions, so the f8bd34c PTY evidence probe and the
+ae6f05d codec fix on-device chat round remain CI-unverified. Fix:
+pattern widened to `NativeConversation:? surface visible`
+(format-tolerant), with the logcat rendering documented next to the
+stage. Chain of the four failing runs: 41984031992 unit tests (caught
+the VQL codec defects, §11.1) → 41986296022 androidTest compile
+(fail()-returns-void smart-cast, fixed f8bd34c) → 41988747804 +
+41990196616 frontend-smoke marker grep (this entry).
