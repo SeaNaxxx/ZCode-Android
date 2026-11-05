@@ -471,6 +471,21 @@ fun LocalWebViewScreen(url: String, onOpenDiagnostics: (openBackup: Boolean) -> 
                         url
                     }
                 }.getOrDefault(url)
+                // Mobile-adaptation layer kill-switch (owner-decision family of
+                // config hooks): a `files/config-mobile-css-off` marker disables
+                // the injected phone CSS — the page then renders exactly as the
+                // desktop bundle intends. Diagnostic hook, not a product switch.
+                val mobileCssDisabled = runCatching {
+                    java.io.File(ctx.filesDir, "config-mobile-css-off").isFile
+                }.getOrDefault(false)
+                WebDiagnostics.log(
+                    "webview",
+                    "mobile CSS: " + if (mobileCssDisabled) {
+                        "OFF (config-mobile-css-off marker present — experiment config)"
+                    } else {
+                        "ON (phone-adaptation layer will inject on page finish)"
+                    }
+                )
                 var experimentRan = false
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true
@@ -573,6 +588,15 @@ fun LocalWebViewScreen(url: String, onOpenDiagnostics: (openBackup: Boolean) -> 
                             // the shim detects health and stays idle.
                             if (finishedUrl != null && !finishedUrl.startsWith("data:")) {
                                 view.evaluateJavascript(VIEWPORT_SHIM_JS, null)
+                                // Phone-adaptation CSS layer (self-gating by
+                                // media query + idempotent per document): only
+                                // narrows the desktop layout to phone widths —
+                                // compact composer, safe-area padding, 16px
+                                // inputs, no horizontal overflow. Kill-switch:
+                                // config-mobile-css-off marker.
+                                if (!mobileCssDisabled) {
+                                    view.evaluateJavascript(MOBILE_ADAPT_JS, null)
+                                }
                             }
                             view.postDelayed({ dumpDomState(view) }, 4_000)
                             // Invisible render probe (owner directive 2026-10-31:
@@ -1024,6 +1048,64 @@ private fun queryDisplayName(context: android.content.Context, uri: Uri): String
             if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
         }
     }.getOrNull()
+
+/**
+ * Phone-adaptation CSS layer (owner decision 2026-11-04: the desktop web UI
+ * runs full-screen on a phone; this injection adapts it conservatively).
+ *
+ * Design constraints, deliberately minimal and class-name-agnostic (no
+ * upstream bundle internals are pinned):
+ *  1. SELF-GATING by media query: every rule sits inside
+ *     `@media (max-width: 820px)` — desktop/tablet layouts and the upstream
+ *     mobile route's own styling are untouched when the viewport is wider.
+ *  2. IDEMPOTENT per document: a fixed-id <style> (#zcode-mobile-adapt) plus
+ *     a window flag; re-runs of this script (SPA soft reloads, repeat
+ *     onPageFinished) append nothing.
+ *  3. SAFE by scope: only four conservative behaviors —
+ *     (a) no horizontal overflow on the root scrollers;
+ *     (b) 16px font-size on form controls (prevents the WebView focus zoom
+ *         that shifts the composer off-screen on phones);
+ *     (c) safe-area bottom padding for composer-classed containers
+ *         (viewport-fit=cover is added to the existing viewport meta so
+ *         env(safe-area-inset-*) can resolve on notched devices);
+ *     (d) hero-classed blocks constrained to full width with word wrap.
+ *  4. KILL-SWITCH: the `config-mobile-css-off` marker file disables the
+ *     whole layer (checked app-side before evaluation).
+ *
+ * Evidence: the injection result is logged to the console sink so the
+ * persisted web log records whether the layer applied (probe-able in CI).
+ */
+private const val MOBILE_ADAPT_JS = """
+(function(){
+  if (window.__zcodeMobileAdapt) { return; }
+  window.__zcodeMobileAdapt = true;
+  try {
+    var m = document.querySelector('meta[name="viewport"]');
+    if (m) {
+      var c = m.getAttribute('content') || '';
+      if (c.indexOf('viewport-fit') < 0) {
+        m.setAttribute('content', c + (c ? ', ' : '') + 'viewport-fit=cover');
+      }
+    }
+  } catch (e) {}
+  if (document.getElementById('zcode-mobile-adapt')) { return; }
+  var css = [
+    '@media (max-width: 820px) {',
+    '  html, body { overflow-x: hidden !important; }',
+    '  textarea, input, select { font-size: 16px !important; }',
+    '  [class*="composer"], [class*="inputbar"], [class*="input-bar"], [class*="composer-bar"] {',
+    '    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important;',
+    '  }',
+    '  [class*="hero"] { max-width: 100% !important; overflow-wrap: break-word; }',
+    '}'
+  ].join('\n');
+  var st = document.createElement('style');
+  st.id = 'zcode-mobile-adapt';
+  st.textContent = css;
+  (document.head || document.documentElement).appendChild(st);
+  console.log('[zcode-mobile-css] injected: media(max-width:820px) layer, viewport-fit=cover, idempotent');
+})();
+"""
 
 /**
  * Viewport pixel shim (failure-3 engine state).
