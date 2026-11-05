@@ -1,5 +1,15 @@
 # Migration Plan
 
+> **Status update 2026-11-05 (implementation).** Phases 0–4 are
+> implemented and CI-verified where marked: P0 protocol stack restored +
+> CI chat round (native-protocol stage), P1 design system, P2 native
+> conversation surface (WebView product path removed), P3 agent-activity
+> rendering (verified event schema), P4 read-only workspace
+> (file/git channels; terminal gated on the pty-probe evidence).
+> Reports: [NATIVE-UI-INTEGRATION.md](NATIVE-UI-INTEGRATION.md) (P5:
+> state ownership, design review, §8/§10 audits) and
+> [DEVICE-VALIDATION.md](DEVICE-VALIDATION.md) (P6 owner checklist).
+
 > **Direction update (owner decision 2026-11-05, revised — GOVERNING).**
 > The product interface is **NATIVE-ONLY** per
 > [ANDROID-UI-ARCHITECTURE-REVISED.md](../ANDROID-UI-ARCHITECTURE-REVISED.md):

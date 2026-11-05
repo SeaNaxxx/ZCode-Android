@@ -179,7 +179,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, "127.0.0.1", () => {
   logEvent({ event: "listening", port: PORT });
-  console.log(`[mock-provider] listening on :${PORT}, log=${LOG}`);
+  console.log(`[mock-provider] listening on 127.0.0.1:${PORT}, log=${LOG}`);
 });
