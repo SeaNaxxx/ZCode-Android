@@ -168,10 +168,14 @@ class MainActivity : ComponentActivity() {
                                 },
                             )
                         } else if (showWorkspace) {
-                            val vm: WorkspaceViewModel = viewModel()
+                            val vm: WorkspaceViewModel = viewModel(
+                                factory = WorkspaceViewModel.factory(this@MainActivity),
+                            )
                             WorkspaceScreen(vm = vm, onBack = { showWorkspace = false })
                         } else {
-                            val vm: ConversationViewModel = viewModel()
+                            val vm: ConversationViewModel = viewModel(
+                                factory = ConversationViewModel.factory(this@MainActivity),
+                            )
                             ConversationScreen(
                                 vm = vm,
                                 onOpenDiagnostics = {

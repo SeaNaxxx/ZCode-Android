@@ -1,9 +1,12 @@
 package io.github.zcodeandroid.app.ui.conversation
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import io.github.zcodeandroid.app.local.RuntimeBus
+import io.github.zcodeandroid.app.local.RuntimePaths
 import io.github.zcodeandroid.app.native.ZcodeApi
 import io.github.zcodeandroid.app.protocol.ZcodeRpcClient
 import kotlinx.coroutines.Dispatchers
@@ -377,5 +380,24 @@ class ConversationViewModel(
     override fun onCleared() {
         taskListener?.dispose()
         rpc?.close()
+    }
+
+    companion object {
+        /**
+         * Reflection-proof construction for `viewModel(factory = ...)`.
+         * The default factory reflects for a no-arg constructor; this class
+         * needs the workspace path, so without an explicit factory every
+         * composition crashed with NoSuchMethodException `<init> []`
+         * (FATAL EXCEPTION on main — CI run 41994982876, "ZCode keeps
+         * stopping" on the relaunch).
+         */
+        fun factory(ctx: Context): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                    ConversationViewModel(
+                        RuntimePaths.workspace(ctx.applicationContext).absolutePath,
+                    ) as T
+            }
     }
 }

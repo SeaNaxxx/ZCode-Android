@@ -1,8 +1,11 @@
 package io.github.zcodeandroid.app.ui.workspace
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import io.github.zcodeandroid.app.local.RuntimeBus
+import io.github.zcodeandroid.app.local.RuntimePaths
 import io.github.zcodeandroid.app.native.ZcodeApi
 import io.github.zcodeandroid.app.protocol.ZcodeRpcClient
 import kotlinx.coroutines.Dispatchers
@@ -214,5 +217,21 @@ class WorkspaceViewModel(
 
     override fun onCleared() {
         rpc?.close()
+    }
+
+    companion object {
+        /**
+         * Reflection-proof construction for `viewModel(factory = ...)`
+         * (same NoSuchMethodException crash class as ConversationViewModel
+         * in CI run 41994982876).
+         */
+        fun factory(ctx: Context): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                    WorkspaceViewModel(
+                        RuntimePaths.workspace(ctx.applicationContext).absolutePath,
+                    ) as T
+            }
     }
 }
