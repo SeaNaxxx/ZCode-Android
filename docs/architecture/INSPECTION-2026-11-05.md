@@ -1,14 +1,15 @@
-# Runtime Inspection — Native-first Hybrid transition
+# Runtime Inspection — Native-only transition baseline
 
-**Status:** inspection report per [ANDROID-UI-ARCHITECTURE.md](../ANDROID-UI-ARCHITECTURE.md)
-§5 (Runtime Inspection Requirements) and §12 (Instructions to the Coding
-Agent). Evidence-based only — no implementation shipped in this change.
+**Status:** inspection report per
+[ANDROID-UI-ARCHITECTURE-REVISED.md](../ANDROID-UI-ARCHITECTURE-REVISED.md)
+(§5 Phase 0 Runtime Inspection; §15 agent instructions). Originally
+produced under the superseded Native-first Hybrid doc (§5/§12); extended
+by the §10 addendum below after the Native-only revision.
+Evidence-based only — no implementation shipped in this change.
 
 **Baseline:** branch `dev` @ `db17c79` (versionName 0.6.0, unified web
-surface, owner decision 2026-11-04). **New owner direction 2026-11-05:**
-Native-first Hybrid (this document is the transition baseline; the
-2026-11-04 unified-surface decision is superseded as the *target* but
-remains the *current, working* product surface and compatibility layer).
+surface, owner decision 2026-11-04). **Owner direction 2026-11-05
+(revised):** Native-only — see the §10 addendum.
 
 Evidence labels: **VERIFIED** = the app or a process it spawns actually
 executes it (file:line cited); **REFERENCED** = documented only;
@@ -307,8 +308,9 @@ surface and require the owner's explicit go-ahead.
 
 ## 10. Addendum — Native-only revision (owner decision, 2026-11-05)
 
-**ANDROID-UI-ARCHITECTURE-REVISED.md supersedes ANDROID-UI-ARCHITECTURE.md
-as the governing direction: the product interface is NATIVE-ONLY — no
+**ANDROID-UI-ARCHITECTURE-REVISED.md is the governing direction (it
+supersedes the Native-first Hybrid doc, which was removed): the product
+interface is NATIVE-ONLY — no
 WebView product UI, no `/remote`/Desktop embedding, no WebView fallback
 for unmigrated features (mark them unavailable instead).** The inspection
 sections above remain valid as the runtime baseline; this addendum maps
