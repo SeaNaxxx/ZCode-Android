@@ -671,3 +671,37 @@ Honest observations recorded (not gating):
 - the concurrent-probe pacing fix (8s -> 2s spacing) keeps the >= 2
   REAL readProjects round-trips requirement unchanged; nothing was
   weakened, removed, or bypassed.
+
+### 11.10 ALL GREEN — P0 exit evidence achieved (run 42103274954)
+
+The pacing fix held: native-protocol PASSED with the summary line
+`NATIVE-PROBE-PASS event-types=[Bash, Write, agent_message_chunk,
+glm_agent_model_state_update, mode_update, permission_response,
+session_info_update, task_complete, task_network_debug_status,
+task_run_started] permission-requests=3 concurrent-readProjects-ok=2`
+(evidence artifact x86_64-verify-evidence, verify-logs/
+native-protocol.log:68). That is the full P0 exit definition: one REAL
+chat round — sendPrompt -> stream frames -> respondPermission (x3
+grants, turn continued after each) -> task_complete(stopReason=success)
+— through the restored Kotlin WS client (ZcodeRpcClient/VQL/ZcodeApi)
+against the embedded server and mock, with a second concurrent native
+client answering readProjects twice during the turn. All 22 stages
+PASS on commit 647de3e (x86_64 AVD app-level evidence; ARM64 on-device
+verdict remains pending per the evidence tiers).
+
+PTY conclusion (honest, from the same artifact's pty-probe.log):
+`PTY-PROBE-VERDICT: NEGATIVE (load failed — ABI/binary mismatch;
+evidence above names the exact missing binary)` — the loader checked
+build/Release, build/Debug, prebuilds/android-x64 and could not find
+`./prebuilds/android-x64//pty.node`. The stage's gate therefore
+worked as designed: a terminal UI may NOT be proposed yet, and per
+owner rules the node-pty fix requires its own pinned-upstream root
+cause pass before any code change (the double slash in the reported
+path is recorded verbatim as evidence, not interpreted).
+
+Probe-chain disposition (five distinct defects, fixed one at a time,
+each proven by the run where the failure moved): §11.5
+remote-project-required -> §11.6 FK deferred persistence -> §11.7
+void-ack timeout misread -> §11.8 EventListen single-arg body ->
+§11.9 coexistence pacing. No bypasses, no timeout changes; every fix
+mirrors a pinned-upstream contract.
