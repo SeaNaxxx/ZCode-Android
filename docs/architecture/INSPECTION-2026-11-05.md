@@ -302,3 +302,61 @@ Per §12: **wait for implementation approval before broad architectural
 changes.** P0 (protocol restore + proof stage) touches no product
 surface and is the recommended first approval; P1–P2 change the default
 surface and require the owner's explicit go-ahead.
+
+------------------------------------------------------------------------
+
+## 10. Addendum — Native-only revision (owner decision, 2026-11-05)
+
+**ANDROID-UI-ARCHITECTURE-REVISED.md supersedes ANDROID-UI-ARCHITECTURE.md
+as the governing direction: the product interface is NATIVE-ONLY — no
+WebView product UI, no `/remote`/Desktop embedding, no WebView fallback
+for unmigrated features (mark them unavailable instead).** The inspection
+sections above remain valid as the runtime baseline; this addendum maps
+the revision onto the plan.
+
+### 10.1 Decision deltas vs the Hybrid plan
+
+| Hybrid plan (superseded) | Native-only (governing) |
+|---|---|
+| WebView = compatibility layer for settings/plugins/MCP/skills | WebView never renders product UI; unmigrated features are marked unavailable, upstream web functionality itself is untouched (§2.1.6–7) |
+| Native default surface at Phase 2, WebView one tap away | Native screens only; the local server stays an internal service (§10), not a user-facing web interface |
+| Focus: streaming chat + agent activity | Same, plus **"This device" host identity** (§2.3), **AI-slop design gate per screen** (§4), **security audit** (§10), **persistence/Keystore report** (§8) |
+
+### 10.2 Conflicts with the current 0.6.0 surface (to resolve at their phase, not in an audit)
+
+1. Product surface IS the web UI (MainActivity.kt:154–174 →
+   `LocalWebViewScreen`) — §2.1 violation, resolved by Phase 2/5.
+2. Phone CSS layer + `/remote` overflow menu (fb84819, ce2066c) —
+   become obsolete for the product path once native screens ship.
+3. Storage permission pair requested at startup (MainActivity.kt:233–244)
+   — §9 requires just-in-time requests; the app-private runtime needs no
+   broad storage permission. Move to the workspace-import flow.
+4. Mock provider binds `0.0.0.0:9999` (verify-mock-provider.cjs:182)
+   and the web server binds tokenless loopback — §10 explicitly warns
+   TCP loopback is NOT isolated from other Android apps; audit-only for
+   now, UDS comparison recommended (least invasive secure design).
+5. `ZCODE_SERVER_AUTH_TOKEN` unset — §10 auth inspection item.
+
+### 10.3 New Phase-0 evidence requirements (§15) beyond the report above
+
+- Typed RPC shapes (parameter names/types, event payloads, cancellation/
+  timeout, reconnection/subscription lifecycle) verified against the
+  PINNED upstream source — not from method names (§6, §Phase 0.7).
+- Session/memory/settings storage inventory (§Phase 0.11) — currently
+  only `zcode-data/.zcode/v2/` paths and ZcodeBackup exclusions are
+  verified.
+- Existing tests inventory (§Phase 0.14): unit tests exist
+  (DiagReportTest et al.); CI stages enumerated in the report above.
+- Distinguish per fact: confirmed from source / test-verified /
+  device-verified / inference (§15) — the report above labels VERIFIED/
+  REFERENCED/UNKNOWN; device-verified rows stay empty (emulator ≠
+  device, per README).
+
+### 10.4 What survives unchanged
+
+P0 protocol proof (restore 0.5.0 stack + live chat turn in CI) is MORE
+critical under Native-only — it is the sole verified transport candidate
+for the Kotlin integration layer. Runtime host, diagnostics, backup,
+`RuntimeBus`, and Compose-only toolkit findings all carry over. The
+2026-11-04 unified web surface remains the interim product until native
+screens replace it (phased, reviewable, per §11).

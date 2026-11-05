@@ -1,5 +1,21 @@
 # Migration Plan
 
+> **Direction update (owner decision 2026-11-05, revised — GOVERNING).**
+> The product interface is **NATIVE-ONLY** per
+> [ANDROID-UI-ARCHITECTURE-REVISED.md](../ANDROID-UI-ARCHITECTURE-REVISED.md):
+> all product screens in Jetpack Compose; WebView must never render the
+> ZCode product UI (no Desktop embedding, no `/remote` as primary
+> interface, no WebView fallback — unmigrated features are marked
+> unavailable). The local server stays an internal service. Host identity
+> is "This device". Adds the AI-slop design gate (§4), a security audit
+> of the local runtime (§10, loopback ≠ app isolation; UDS comparison),
+> just-in-time permissions (§9), and persistence/Keystore requirements
+> (§8). Phases 0–6 unchanged in order; Phase 0 inspection baseline:
+> [INSPECTION-2026-11-05.md](INSPECTION-2026-11-05.md) (incl. §10
+> addendum). The Native-first Hybrid note below is superseded as the
+> target direction; the 2026-11-04 unified web surface remains the
+> interim product until each native replacement is verified.
+
 > **Direction update (owner decision 2026-11-05 — supersedes the
 > 2026-11-04 update below as the TARGET direction).** The product
 > transitions to a **Native-first Hybrid** architecture per
