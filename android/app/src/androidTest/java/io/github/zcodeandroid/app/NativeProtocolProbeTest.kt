@@ -157,11 +157,16 @@ class NativeProtocolProbeTest {
                 .onFailure { log("listTasks error (logged, non-fatal): ${it.message}") }
 
             val task = api.createTask(wsPath)
-            val taskId = (task["taskId"] as? String)
+            val taskId: String = (task["taskId"] as? String)
                 ?: (task["id"] as? String)
                 ?: ((task["task"] as? Map<*, *>)?.get("taskId") as? String)
                 ?: ((task["task"] as? Map<*, *>)?.get("id") as? String)
-            if (taskId == null) fail("createTask returned no taskId (result: ${short(task)})")
+                ?: run {
+                    // org.junit.Assert.fail returns void (not Nothing), so the
+                    // null check alone does not smart-cast; fail then stop.
+                    fail("createTask returned no taskId (result: ${short(task)})")
+                    return@runBlocking
+                }
             log("createTask -> taskId=$taskId")
 
             // 5. Subscribe BEFORE sendPrompt so every turn frame is captured.

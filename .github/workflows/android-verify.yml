@@ -91,6 +91,27 @@ jobs:
               && git apply ../scripts/upstream-patches/0001-project-route-local-alias-for-standalone-server.patch \
               && grep -n 'hostId === "local"' packages/services/src/project/index.ts )
 
+      - name: Pin the RPC channel surface from the pinned source (native integration evidence)
+        run: |
+          # REVISED architecture §6: no invented endpoints, methods, or event
+          # names. Dumps ServiceChannels + every service interface's method
+          # signatures straight from the pinned upstream source, so every
+          # native RPC call in the Kotlin integration layer can cite this
+          # artifact (uploaded with the evidence bundle).
+          {
+            echo "upstream_pin=$UPSTREAM_PIN"
+            echo "--- packages/shared/src/channels.ts ServiceChannels ---"
+            sed -n '/export const ServiceChannels/,/^};/p' upstream/packages/shared/src/channels.ts
+            echo "--- service interfaces (pinned method surface) ---"
+            for f in $(find upstream/packages/services/src -name '*.ts' | sort); do
+              if grep -qE "export interface I[A-Z]" "$f"; then
+                echo "### $f"
+                awk '/export interface I[A-Z][A-Za-z]*[^{]*\{/,/^\}/' "$f"
+              fi
+            done
+          } > "$LOGS_DIR/rpc-surface.txt" 2>&1
+          wc -l "$LOGS_DIR/rpc-surface.txt"
+
       - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
@@ -187,6 +208,8 @@ jobs:
              scripts/embedded/assets/verify-mock-provider-config.json \
              scripts/embedded/assets/register-workspace-project.cjs \
              scripts/embedded/assets/verify-second-send.cjs \
+             scripts/embedded/assets/verify-pty-probe.cjs \
+             scripts/embedded/assets/verify-pty-probe.cjs \
              scripts/embedded/assets/tls-diagnose.cjs \
              scripts/embedded/assets/oauth-flow-probe.cjs \
              scripts/embedded/assets/diag-collector.cjs \
@@ -218,6 +241,7 @@ jobs:
             assets/runtime/bionic/verify-mock-provider-config.json \
             assets/runtime/bionic/register-workspace-project.cjs \
             assets/runtime/bionic/verify-second-send.cjs \
+            assets/runtime/bionic/verify-pty-probe.cjs \
             assets/runtime/bionic/tls-diagnose.cjs \
             assets/runtime/bionic/oauth-flow-probe.cjs \
             assets/runtime/bionic/cacert.pem ; do
@@ -1053,6 +1077,26 @@ jobs:
               || { echo "FAIL: NATIVE-PROBE-PASS marker missing from logcat"; exit 1; }
           '
 
+      - name: pty-probe | node-pty load + REAL pty.spawn evidence (terminal gate)
+        run: |
+          # Terminal UI evidence gate (REVISED §10; DEPENDENCY-AUDIT
+          # touchpoint 6; 0.5.0 device report: ./prebuilds/android-arm64/
+          # pty.node load failure). require('node-pty') alone was NEVER
+          # sufficient evidence — this probe walks the extracted runtime,
+          # loads the module, and runs a REAL pty.spawn of the embedded sh.
+          # Either verdict is a completed evidence run (exit 0); the
+          # PTY-PROBE-VERDICT line decides whether a terminal UI may be
+          # built. The agent Bash tool path does not use a PTY and is
+          # already proven by agent-effects.
+          source /tmp/verify-stage-lib.sh
+          adb push scripts/embedded/assets/verify-pty-probe.cjs /data/local/tmp/verify-pty-probe.cjs > /dev/null
+          stage_run pty-probe -- bash -c '
+            set -e
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-pty-probe.cjs /data/user/0/'"$PKG"'/files \
+              | tee /dev/stderr | grep -q "PTY-PROBE-VERDICT:" \
+              || { echo "FAIL: pty probe produced no verdict"; exit 1; }
+          '
+
       - name: persistence | force-stop + relaunch (no re-provision, files survive)
         run: |
           source /tmp/verify-stage-lib.sh
@@ -1214,7 +1258,7 @@ jobs:
           d = sys.argv[1]
           stages = ["install", "offline", "setup-tap", "node-probe", "openssl-offline", "start-tap",
                     "frontend-smoke", "dark-mode", "agent-loop", "agent-effects", "second-send",
-                    "native-protocol", "persistence", "net-restore", "tls-https", "tls-zai", "oauth-flow", "emu-boot"]
+                    "native-protocol", "pty-probe", "persistence", "net-restore", "tls-https", "tls-zai", "oauth-flow", "emu-boot"]
           rows = []
           for s in stages:
               p = os.path.join(d, s + ".json")
@@ -1234,6 +1278,7 @@ jobs:
               "agent-effects": "agent effects verified on disk (criterion 3 mechanics)",
               "second-send": "second message in the SAME conversation: pre-send resolveSessionDirectories(task, local) must be admitted on the app's own server (owner device defect 2026-10-31: project.host-offline pre-admission; x86_64 AVD app-level evidence only)",
               "native-protocol": "P0 exit evidence: real chat round (sendPrompt -> stream frames -> respondPermission) through the restored Kotlin WS client (Vql/ZcodeRpcClient/ZcodeApi) against the embedded mock, with a second concurrent native client (x86_64 AVD app-level evidence only; ARM64 device verdict pending)",
+              "pty-probe": "node-pty load + real pty.spawn evidence inside the Bionic runtime (terminal UI gate; either verdict completes the evidence run)",
               "persistence": "restart survival, no re-provision (criterion 5 mechanics)",
               "net-restore": "test precondition for tls-https (not a device criterion)",
               "tls-https": "real HTTPS with certificate verification enabled (failure-2 acceptance; x86_64 AVD app-level evidence only)",
