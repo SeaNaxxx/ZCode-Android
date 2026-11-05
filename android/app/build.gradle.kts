@@ -92,6 +92,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
     testImplementation(libs.junit)
     // Real org.json for JVM unit tests of the VQL codec (android.jar stubs it).
     testImplementation("org.json:json:20240303")

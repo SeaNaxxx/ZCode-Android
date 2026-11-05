@@ -1,9 +1,7 @@
 package io.github.zcodeandroid.app
 
-import android.Manifest
 import android.app.UiModeManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -26,30 +24,33 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.zcodeandroid.app.local.LocalServerService
 import io.github.zcodeandroid.app.local.Provisioner
 import io.github.zcodeandroid.app.local.RuntimeBus
 import io.github.zcodeandroid.app.local.RuntimeState
 import io.github.zcodeandroid.app.ui.LocalApp
-import io.github.zcodeandroid.app.ui.LocalWebViewScreen
+import io.github.zcodeandroid.app.ui.conversation.ConversationScreen
+import io.github.zcodeandroid.app.ui.conversation.ConversationViewModel
+import io.github.zcodeandroid.app.ui.theme.THEME_DARK
+import io.github.zcodeandroid.app.ui.theme.THEME_LIGHT
+import io.github.zcodeandroid.app.ui.theme.THEME_SYSTEM
 import io.github.zcodeandroid.app.ui.theme.ZcodeTheme
 
 /**
- * Entry point — ONE unified product surface (owner decision 2026-11-04):
- * install -> open -> permissions -> silent provisioning -> the official
- * ZCode web UI running on the local server, full-screen in the WebView.
+ * Entry point — NATIVE-ONLY product surface (owner decision 2026-11-05,
+ * ANDROID-UI-ARCHITECTURE-REVISED.md): install -> open -> silent
+ * provisioning -> the Compose conversation screen backed by the local
+ * ZCode runtime over the WS RPC contract.
  *
- * There is no native/web/remote mode matrix anymore: the Phase 2 native
- * shell and the relay remote-control client are removed from the product
- * path (the 0.5.0 native shell stays parked in git history, tag 0.5.0).
- * The diagnostics overlay (runtime log, workspace file import,
- * backup/restore, app theme) is reached from the web UI's overflow (⋮)
- * menu — see LocalWebViewScreen.
+ * The WebView is no longer a product surface (§2/§5 Phase 5); the local
+ * server remains an internal service. The diagnostics overlay (runtime
+ * log, workspace file import, backup/restore, app theme) is reached from
+ * the conversation screen's overflow (⋮) menu — see LocalApp.
  *
- * The `config-web-fallback` marker keeps working as a CI/diagnostic hook:
- * with a single web path it is a no-op by construction (the app is ALWAYS
- * on the web-UI surface), kept only so existing verify stages and manual
- * experiments stay meaningful.
+ * Permissions (§9 just-in-time): no storage permission is requested at
+ * startup — runtime provisioning is app-private; workspace import uses
+ * the SAF document picker from the diagnostics overlay.
  */
 class MainActivity : ComponentActivity() {
     private var showDiagnostics by mutableStateOf(false)
@@ -108,7 +109,6 @@ class MainActivity : ComponentActivity() {
             android.webkit.WebView.setWebContentsDebuggingEnabled(true)
         }
         themeMode = prefs.getInt(KEY_THEME_MODE, THEME_SYSTEM)
-        requestStoragePermissionIfNeeded()
 
         if (savedInstanceState != null) {
             showDiagnostics = savedInstanceState.getBoolean(KEY_SHOW_DIAGNOSTICS, false)
@@ -164,11 +164,17 @@ class MainActivity : ComponentActivity() {
                                 },
                             )
                         } else {
-                            LocalWebViewScreen(
-                                url = running.url,
-                                onOpenDiagnostics = { openBackup ->
-                                    diagnosticsOpenBackup = openBackup
+                            val vm: ConversationViewModel = viewModel()
+                            ConversationScreen(
+                                vm = vm,
+                                onOpenDiagnostics = {
+                                    diagnosticsOpenBackup = false
                                     showDiagnostics = true
+                                },
+                                themeMode = themeMode,
+                                onSetThemeMode = { value ->
+                                    themeMode = value
+                                    prefs.edit().putInt(KEY_THEME_MODE, value).apply()
                                 },
                             )
                         }
@@ -222,46 +228,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Legacy external storage (targetSdk 28): a granted READ/WRITE pair gives
-     * the embedded runtime full /storage/emulated/0 access. Owner report
-     * 2026-11-02: the runtime could not read /sdcard/Download (workspace
-     * imports, APK analysis inputs). The request fires once at startup;
-     * denial is logged and non-fatal — the app keeps working with
-     * app-private storage only.
-     */
-    private fun requestStoragePermissionIfNeeded() {
-        val missing = arrayOf(
-            Manifest.permission.READ_EXTERNAL_STORAGE,
-            Manifest.permission.WRITE_EXTERNAL_STORAGE,
-        ).filter {
-            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (missing.isEmpty()) {
-            return
-        }
-        requestPermissions(missing.toTypedArray(), REQUEST_STORAGE)
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_STORAGE) {
-            val granted = grantResults.count { it == PackageManager.PERMISSION_GRANTED }
-            RuntimeBus.append("storage permissions: $granted/${grantResults.size} granted")
-        }
-    }
-
     companion object {
-        private const val THEME_SYSTEM = 0
-        private const val THEME_LIGHT = 1
-        private const val THEME_DARK = 2
         private const val KEY_SHOW_DIAGNOSTICS = "showDiagnostics"
         private const val KEY_DIAGNOSTICS_BACKUP = "diagnosticsOpenBackup"
         private const val KEY_THEME_MODE = "theme_mode"
-        private const val REQUEST_STORAGE = 4002
     }
 }
