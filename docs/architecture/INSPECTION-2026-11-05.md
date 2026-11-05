@@ -420,3 +420,31 @@ stage. Chain of the four failing runs: 41984031992 unit tests (caught
 the VQL codec defects, §11.1) → 41986296022 androidTest compile
 (fail()-returns-void smart-cast, fixed f8bd34c) → 41988747804 +
 41990196616 frontend-smoke marker grep (this entry).
+
+### 11.3 View-model construction crash behind frontend-smoke (run 41994982876)
+
+With the marker grep fixed (§11.2), run 41994982876 (cbf81f5) exposed
+the REAL frontend-smoke failure: the app process crashes with a fatal
+exception the moment runtime state reaches Running and
+MainActivity composes ConversationScreen:
+
+```
+E ComposeInternal: RuntimeException: Cannot create an instance of class
+    io.github.zcodeandroid.app.ui.conversation.ConversationViewModel
+Caused by: NoSuchMethodException:
+    ConversationViewModel.<init> []
+```
+
+`viewModel()` (lifecycle) reflects for a no-arg constructor; both
+`ConversationViewModel` and `WorkspaceViewModel` take
+`workspacePath: String` and no factory was passed — and no other
+construction site exists in the codebase, so the native product surface
+was never renderable anywhere (the evidence-bundle UI dump shows the
+system crash dialog "ZCode keeps stopping"; earlier start-tap PASS was
+runtime-level evidence only, PID of the node process, not the UI).
+The two prior failures (§11.2) were this same crash masked by the
+grep-pattern defect. Fix: explicit `ViewModelProvider.Factory` per VM
+(`factory(ctx)` companions resolving
+`RuntimePaths.workspace(ctx).absolutePath`) passed at both MainActivity
+call sites. Deterministic-crash class: any future `viewModel()` of a
+parameterized VM must pass a factory — recorded as a review rule.

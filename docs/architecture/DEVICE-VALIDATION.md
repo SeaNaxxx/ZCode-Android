@@ -17,7 +17,7 @@ diag report) + `adb logcat` for the tagged lines.
 | --- | --- | --- | --- |
 | 1 | Cold startup, silent provisioning | no setup button; `provision-complete.json` marker | CI-verified (setup-tap) |
 | 2 | Runtime readiness | server answers 200 on loopback; `[register]` VERIFIED line | CI-verified (start-tap) |
-| 3 | Native surface renders | logcat `NativeConversation surface visible dark=…` | CI-verified (frontend-smoke, dark-mode A/B) |
+| 3 | Native surface renders | logcat `NativeConversation surface visible dark=…` | **crash fix in flight**: frontend-smoke was failing (viewModel factory crash, run 41994982876 §11.3); re-verify when the stage passes |
 | 4 | Conversation creation | first prompt creates a task (`createTask -> taskId=…` in diag log) | CI-verified (native-protocol, mock model) |
 | 5 | Streaming responses | assistant text appears incrementally (agent_message_chunk rows) | CI-verified with mock; **device verdict pending** (real provider) |
 | 6 | Agent activity | tool rows: running→completed; titles legible | CI-verified (agent-effects effects on disk) |
