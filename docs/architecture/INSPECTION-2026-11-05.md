@@ -498,3 +498,30 @@ project with EXACTLY one root equal to the workspace path (the shape
 remote-policy accepts) — and `createTask(wsPath, projectId)`; the
 probe and the product send path resolve the projectId first and fail
 with a precise message when the workspace is not registered.
+
+### 11.6 First sendText after createTask: deferred persistence contract (run 42081304813)
+
+The projectId fix worked: `workspace project resolution ->
+19f6def3-…` resolved a registered project, `createTask ->
+taskId=session_2446ea83-…` was ACCEPTED — the
+remote-project-required gate is behind us. The failure moved one
+step further: `api.sendPrompt` was rejected with
+`v4 command sendText failed (fault.command.executionFailed):
+FOREIGN KEY constraint failed — session=session_2446ea83-…`.
+
+Root cause: the headless create-then-immediately-send caller shape.
+The agent runtime's `session_input` ledger has a foreign key on the
+session main record; when a task is created and the first V4 input is
+sent immediately, admission must persist the session main record
+first. Upstream documents this exact failure for the automation path
+(zcodeTaskServiceAdapter.ts:1813: "否则 create 返回成功后第一条 prompt
+会稳定触发 FOREIGN KEY constraint failed") and exposes the official
+createTask param `deferPersistenceUntilFirstPrompt`
+(zcodeTaskService.ts: "无界面派发会先创建空 session，再立即发送首条
+V4 输入"), which the adapter maps to createSession
+`persistence: "deferred"`.
+
+Fix (official contract, no bypass): ZcodeApi.createTask always sends
+`deferPersistenceUntilFirstPrompt: true` — both native send paths
+(probe and ConversationModel) create and send within the same flow,
+which is precisely the caller shape the param documents.

@@ -83,12 +83,25 @@ class ZcodeApi(private val rpc: ZcodeRpcClient) {
      * findRegisteredProjectId). Sent only when resolved: the wire keeps the
      * "no projectId" shape a caller that has none, so upstream behavior is
      * never masked.
+     *
+     * deferPersistenceUntilFirstPrompt is the upstream contract for exactly
+     * this caller shape (zcodeTaskService.ts: 无界面派发会先创建空 session，
+     * 再立即发送首条 V4 输入): headless create followed by an immediate
+     * first sendPrompt. The adapter maps it to createSession
+     * persistence="deferred", so V4 admission persists the session main
+     * record before the session_input foreign-key ledger write. Run
+     * 42081304813: without it the first prompt failed deterministically with
+     * "v4 command sendText failed … FOREIGN KEY constraint failed"
+     * (zcodeTaskServiceAdapter.ts:1813 documents the same failure for the
+     * automation path). Both native send paths create-then-send immediately,
+     * so the flag is always sent.
      */
     suspend fun createTask(workspacePath: String, projectId: String? = null): Map<String, Any?> {
         @Suppress("UNCHECKED_CAST")
         val params = buildMap<String, Any?> {
             if (projectId != null) put("projectId", projectId)
             put("workspacePath", workspacePath)
+            put("deferPersistenceUntilFirstPrompt", true)
             put("permissionScope", "session")
         }
         return rpc.call(
