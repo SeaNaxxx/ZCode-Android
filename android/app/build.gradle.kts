@@ -86,6 +86,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
+    // Core icon set lacks Folder/Description/Refresh etc. — extended set is
+    // R8-shrunk to the icons actually referenced.
+    implementation("androidx.compose.material:material-icons-extended")
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)

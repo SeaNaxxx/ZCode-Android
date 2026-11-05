@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.List
@@ -78,6 +79,7 @@ import io.github.zcodeandroid.app.ui.theme.ZcodeThemeValues
 fun ConversationScreen(
     vm: ConversationViewModel,
     onOpenDiagnostics: () -> Unit,
+    onOpenWorkspace: () -> Unit,
     themeMode: Int,
     onSetThemeMode: (Int) -> Unit,
 ) {
@@ -164,6 +166,11 @@ fun ConversationScreen(
                             text = { Text("Task history") },
                             leadingIcon = { Icon(Icons.Filled.List, contentDescription = null) },
                             onClick = { menuOpen = false; showHistory = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Workspace") },
+                            leadingIcon = { Icon(Icons.Filled.Folder, contentDescription = null) },
+                            onClick = { menuOpen = false; onOpenWorkspace() },
                         )
                         DropdownMenuItem(
                             text = { Text("Diagnostics") },

@@ -32,6 +32,8 @@ import io.github.zcodeandroid.app.local.RuntimeState
 import io.github.zcodeandroid.app.ui.LocalApp
 import io.github.zcodeandroid.app.ui.conversation.ConversationScreen
 import io.github.zcodeandroid.app.ui.conversation.ConversationViewModel
+import io.github.zcodeandroid.app.ui.workspace.WorkspaceScreen
+import io.github.zcodeandroid.app.ui.workspace.WorkspaceViewModel
 import io.github.zcodeandroid.app.ui.theme.THEME_DARK
 import io.github.zcodeandroid.app.ui.theme.THEME_LIGHT
 import io.github.zcodeandroid.app.ui.theme.THEME_SYSTEM
@@ -54,6 +56,7 @@ import io.github.zcodeandroid.app.ui.theme.ZcodeTheme
  */
 class MainActivity : ComponentActivity() {
     private var showDiagnostics by mutableStateOf(false)
+    private var showWorkspace by mutableStateOf(false)
     private var diagnosticsOpenBackup by mutableStateOf(false)
     private var themeMode by mutableStateOf(THEME_SYSTEM)
 
@@ -112,6 +115,7 @@ class MainActivity : ComponentActivity() {
 
         if (savedInstanceState != null) {
             showDiagnostics = savedInstanceState.getBoolean(KEY_SHOW_DIAGNOSTICS, false)
+            showWorkspace = savedInstanceState.getBoolean(KEY_SHOW_WORKSPACE, false)
             diagnosticsOpenBackup = savedInstanceState.getBoolean(KEY_DIAGNOSTICS_BACKUP, false)
         }
 
@@ -163,6 +167,9 @@ class MainActivity : ComponentActivity() {
                                     prefs.edit().putInt(KEY_THEME_MODE, value).apply()
                                 },
                             )
+                        } else if (showWorkspace) {
+                            val vm: WorkspaceViewModel = viewModel()
+                            WorkspaceScreen(vm = vm, onBack = { showWorkspace = false })
                         } else {
                             val vm: ConversationViewModel = viewModel()
                             ConversationScreen(
@@ -171,6 +178,7 @@ class MainActivity : ComponentActivity() {
                                     diagnosticsOpenBackup = false
                                     showDiagnostics = true
                                 },
+                                onOpenWorkspace = { showWorkspace = true },
                                 themeMode = themeMode,
                                 onSetThemeMode = { value ->
                                     themeMode = value
@@ -216,6 +224,7 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(KEY_SHOW_DIAGNOSTICS, showDiagnostics)
+        outState.putBoolean(KEY_SHOW_WORKSPACE, showWorkspace)
         outState.putBoolean(KEY_DIAGNOSTICS_BACKUP, diagnosticsOpenBackup)
     }
 
@@ -230,6 +239,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val KEY_SHOW_DIAGNOSTICS = "showDiagnostics"
+        private const val KEY_SHOW_WORKSPACE = "showWorkspace"
         private const val KEY_DIAGNOSTICS_BACKUP = "diagnosticsOpenBackup"
         private const val KEY_THEME_MODE = "theme_mode"
     }

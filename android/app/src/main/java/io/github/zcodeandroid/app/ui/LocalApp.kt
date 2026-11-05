@@ -165,9 +165,9 @@ fun LocalApp(
         Spacer(Modifier.height(8.dp))
         Text("ZCode — diagnostics", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "The native conversation UI is the product (Native-only decision "
-                + "2026-11-05). This overlay holds the runtime log, workspace imports, "
-                "backup/restore, and the app theme.",
+            "The native conversation UI is the product (Native-only decision " +
+                "2026-11-05). This overlay holds the runtime log, workspace " +
+                "imports, backup/restore, and the app theme.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

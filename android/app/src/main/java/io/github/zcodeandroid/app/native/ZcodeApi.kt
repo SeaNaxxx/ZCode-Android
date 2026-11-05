@@ -161,6 +161,53 @@ class ZcodeApi(private val rpc: ZcodeRpcClient) {
     fun workspaceEvents(workspacePath: String): ZcodeRpcClient.Listener =
         rpc.listen(CHANNEL_ZCODE_TASK, "onDynamicWorkspaceEvent", mapOf("workspacePath" to workspacePath))
 
+    // ------------------------------------------------------- workspace (P4)
+
+    // Pinned-source contracts (zai-org/ZCode @ 3c5b227, packages/services):
+    // IFileService.readdir/readTextFile, IGitService.getRepositorySummary/
+    // getChanges. Unlike the defensive wrappers above (which keep the UI
+    // from fabricating content), these THROW on unexpected shapes — §6:
+    // never silently convert protocol failures into empty lists.
+
+    private fun unexpected(method: String, got: Any?): IllegalStateException =
+        IllegalStateException("$method returned unexpected shape: ${got?.javaClass?.name ?: "null"}")
+
+    /** file.readdir({path, includeHidden?}) -> FileEntry[] */
+    suspend fun readdir(path: String, includeHidden: Boolean = false): List<Map<String, Any?>> {
+        val r = rpc.call(
+            CHANNEL_FILE, "readdir",
+            mapOf("path" to path, "includeHidden" to includeHidden),
+        )
+        @Suppress("UNCHECKED_CAST")
+        return r as? List<Map<String, Any?>> ?: throw unexpected("file.readdir", r)
+    }
+
+    /** file.readTextFile({path, offset?, length?}) -> FileTextSlice */
+    suspend fun readTextFile(path: String, offset: Long? = null, length: Long? = null): Map<String, Any?> {
+        val params = HashMap<String, Any?>()
+        params["path"] = path
+        if (offset != null) params["offset"] = offset
+        if (length != null) params["length"] = length
+        val r = rpc.call(CHANNEL_FILE, "readTextFile", params)
+        return r as? Map<String, Any?> ?: throw unexpected("file.readTextFile", r)
+    }
+
+    /** git.getRepositorySummary({workspacePath}) -> GitRepositorySummary */
+    suspend fun gitRepositorySummary(workspacePath: String): Map<String, Any?> {
+        val r = rpc.call(CHANNEL_GIT, "getRepositorySummary", mapOf("workspacePath" to workspacePath))
+        return r as? Map<String, Any?> ?: throw unexpected("git.getRepositorySummary", r)
+    }
+
+    /** git.getChanges({workspacePath, sourceId: "unstaged"|"staged"}) -> GitFileChange[] */
+    suspend fun gitChanges(workspacePath: String, sourceId: String = "unstaged"): List<Map<String, Any?>> {
+        val r = rpc.call(
+            CHANNEL_GIT, "getChanges",
+            mapOf("workspacePath" to workspacePath, "sourceId" to sourceId),
+        )
+        @Suppress("UNCHECKED_CAST")
+        return r as? List<Map<String, Any?>> ?: throw unexpected("git.getChanges", r)
+    }
+
     // ------------------------------------------------------------------ oauth
 
     @Suppress("UNCHECKED_CAST")
@@ -189,5 +236,7 @@ class ZcodeApi(private val rpc: ZcodeRpcClient) {
         const val CHANNEL_OAUTH = "oauth"
         const val CHANNEL_SETTING = "setting"
         const val CHANNEL_MODEL_SELECTION = "model-selection"
+        const val CHANNEL_FILE = "file"
+        const val CHANNEL_GIT = "git"
     }
 }
