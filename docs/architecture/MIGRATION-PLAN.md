@@ -1,5 +1,19 @@
 # Migration Plan
 
+> **Direction update (owner decision 2026-11-05 — supersedes the
+> 2026-11-04 update below as the TARGET direction).** The product
+> transitions to a **Native-first Hybrid** architecture per
+> [ANDROID-UI-ARCHITECTURE.md](../ANDROID-UI-ARCHITECTURE.md):
+> Jetpack Compose becomes the primary framework (design system →
+> conversational UI → agent UI → workspace UI → hybrid integration →
+> device validation), and the Enhanced WebView remains the compatibility
+> layer for not-yet-migrated functionality (settings, plugins, MCP,
+> skills). Runtime inspection baseline and the evidence-based
+> implementation proposal:
+> [INSPECTION-2026-11-05.md](INSPECTION-2026-11-05.md). The 2026-11-04
+> unified web surface (0.6.0) remains the current, working product
+> surface until each native replacement is independently verified.
+
 > **Direction update (owner decision 2026-11-04 — supersedes success
 > criterion #1).** The product surface is UNIFIED on the official ZCode web
 > UI: ONE interface, the upstream web bundle served by the local server and
