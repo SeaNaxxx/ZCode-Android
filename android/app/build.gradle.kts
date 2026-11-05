@@ -82,6 +82,8 @@ dependencies {
     // Local runtime provisioning: tar extraction (rootfs/node/dist) + xz decoding.
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("org.tukaani:xz:1.10")
+    // Protocol client transport (ws://127.0.0.1:3030/ws) — restored 0.5.0 stack.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui)
@@ -91,6 +93,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     testImplementation(libs.junit)
+    // Real org.json for JVM unit tests of the VQL codec (android.jar stubs it).
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
