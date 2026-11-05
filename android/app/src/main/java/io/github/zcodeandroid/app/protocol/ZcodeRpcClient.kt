@@ -327,7 +327,21 @@ class ZcodeRpcClient(
      * Promise RPC. ProxyChannel convention (upstream packages/rpc/src/
      * proxy-channel.ts): the wire body is the ARRAY of the method's positional
      * arguments — a bare object would be spread as zero arguments.
+     *
+     * TIMEOUT vs VOID-RESPONSE (run 42086199982 root cause; also the 0.5.0
+     * owner-reported "sendPrompt 20s RPC timeout" mechanism): upstream
+     * sendPrompt is Promise<void> — its ack frame (sent at committed
+     * TurnStarted, zcodeAgentService.ts sendConversationCommandV4) carries an
+     * UNDEFINED body, which VQL decodes to Kotlin null. A bare
+     * withTimeoutOrNull cannot distinguish "resolved with null" from "timed
+     * out", so every void method was misreported as a 20s timeout the moment
+     * its ack arrived (probe test failed 8.4s in). Completions are wrapped in
+     * [CallCompleted] so only a real elapsed timeout yields null. NO timeout
+     * value was changed — the default stays 20s; the defect was the
+     * null-completion conflation, proven by the 8.432s JUnit timeline.
      */
+    private class CallCompleted(val value: Any?)
+
     suspend fun call(channel: String, method: String, arg: Any? = null, timeoutMs: Long = 20_000): Any? {
         awaitReady(timeoutMs)
         val id = nextRequestId.getAndIncrement()
@@ -340,7 +354,7 @@ class ZcodeRpcClient(
             suspendCancellableCoroutine { cont ->
                 synchronized(pending) { pending[id] = PendingCall(channel, method, { r ->
                     if (cont.isActive) r.fold(
-                        onSuccess = { cont.resume(it) },
+                        onSuccess = { cont.resume(CallCompleted(it)) },
                         onFailure = { cont.resumeWithException(it) },
                     )
                 }, System.currentTimeMillis() + timeoutMs) }
@@ -352,7 +366,7 @@ class ZcodeRpcClient(
             synchronized(pending) { pending.remove(id) }
             throw RpcError("RPC timeout: $channel.$method (${timeoutMs}ms)")
         }
-        return result
+        return (result as CallCompleted).value
     }
 
     /**

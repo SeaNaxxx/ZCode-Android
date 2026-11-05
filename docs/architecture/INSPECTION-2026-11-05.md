@@ -525,3 +525,37 @@ Fix (official contract, no bypass): ZcodeApi.createTask always sends
 `deferPersistenceUntilFirstPrompt: true` — both native send paths
 (probe and ConversationModel) create and send within the same flow,
 which is precisely the caller shape the param documents.
+
+### 11.7 Void-response acks misread as RPC timeout (run 42086199982) — the 0.5.0 sendPrompt mechanism
+
+The deferred-persistence fix worked: `workspace project resolution ->
+399769aa-…`, `createTask -> taskId=session_c447862f-…` ACCEPTED (the
+sendText admission no longer trips the session_input foreign key).
+The failure moved INSIDE the probe's own protocol client:
+`ZcodeRpcClient$RpcError: RPC timeout: zcode-task.sendPrompt (20000ms)`
+— yet the JUnit timeline proves the whole test ran 8.432s ("Time:
+8.432", instrument start ≈ logcat launch line, fail ≈ stage JSON
+8.3s later). A 20000ms withTimeoutOrNull cannot elapse inside an
+8.4s test: the "timeout" fired the moment the sendPrompt ACK arrived.
+
+Mechanism: upstream sendPrompt is Promise<void>
+(zcodeTaskServiceAdapter.ts sendPromptToAgent resolves at
+assertV4CommandAckOk after committed TurnStarted). The v4 command ack
+frame carries an UNDEFINED body; VQL decodes TAG_UNDEFINED to Kotlin
+null (Vql.kt:189), and ZcodeRpcClient.call resumed the coroutine with
+that null inside withTimeoutOrNull — which cannot distinguish
+"resolved with null" from "elapsed timeout". Every void method
+(sendPrompt, respondPermission, stopGeneration) was therefore
+misreported as a 20s timeout exactly when its ack arrived. Error
+responses (run 42081304813's FK failure) carry a real message body,
+which is why they surfaced correctly.
+
+This is also the 0.5.0 owner-reported "sendPrompt 20s RPC timeout"
+mechanism (same client lineage): the ack misread, not a slow server.
+
+Fix (client-side; NO timeout value changed, default stays 20s):
+completions are wrapped in a private CallCompleted marker so only a
+genuinely elapsed timeout yields null from withTimeoutOrNull. The
+deadlineMs PendingCall field was dead (never checked) and is now
+explicitly unused; a real watchdog remains future work (P7) and is
+NOT part of this fix.
