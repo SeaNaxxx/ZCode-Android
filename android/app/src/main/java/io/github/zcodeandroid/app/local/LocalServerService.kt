@@ -58,6 +58,12 @@ class LocalServerService : Service() {
             return START_NOT_STICKY
         }
         startInForeground()
+        // Native-surface owner for the persisted console sink. Its only
+        // installer used to be the WebView host, deleted with the WebView
+        // product — without an installer webconsole.log is never written
+        // and the diagnostics chain loses its persisted evidence (CI run
+        // 42062089430: diag-collector FAIL "webconsole.log missing").
+        WebDiagnostics.initFileSink(applicationContext.filesDir)
         startDiagReportLoop()
         ensureRuntime()
         return START_REDELIVER_INTENT
