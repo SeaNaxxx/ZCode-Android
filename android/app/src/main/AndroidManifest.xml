@@ -4,7 +4,6 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -13,9 +12,6 @@
          could not read /sdcard/Download for workspace imports). -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    <uses-feature
-        android:name="android.hardware.camera.any"
-        android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -27,10 +23,6 @@
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.Zcode">
-        <service
-            android:name=".remote.RemoteControlKeepAliveService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
 
         <service
             android:name=".local.LocalServerService"
@@ -47,32 +39,13 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-
-                <data
-                    android:host="remote"
-                    android:scheme="zcode" />
-            </intent-filter>
-            <intent-filter android:autoVerify="false">
-                <action android:name="android.intent.action.VIEW" />
-
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-
-                <data
-                    android:host="zcode.z.ai"
-                    android:pathPrefix="/remote"
-                    android:scheme="https" />
-            </intent-filter>
             <!-- OAuth callback deep link (dependency audit 3.4): the desktop
-                 client registers zcode://oauth/callback; the native shell owns
-                 sign-in now, so the app must accept the browser handoff. The
-                 oauth channel's authorizeUrl carries the redirect target; the
-                 WebView handoff path in LocalApp.kt continues to work too. -->
+                 client registers zcode://oauth/callback; the app accepts the
+                 browser handoff so sign-in completes from Chrome. The relay
+                 remote-control deep links (zcode://remote,
+                 https://zcode.z.ai/remote) were removed with the remote
+                 client itself (owner decision 2026-11-04: unified product
+                 surface, no relay remote control). -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
 

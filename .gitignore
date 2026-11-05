@@ -50,3 +50,6 @@ __pycache__/
 # Release signing (never committed; see android/app/build.gradle.kts)
 android/keystore.properties
 keystore.properties
+
+# Local security-scan artifacts (mimosa) — never commit
+.mimosa/

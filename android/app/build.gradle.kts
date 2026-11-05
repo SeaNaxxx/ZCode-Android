@@ -22,17 +22,13 @@ android {
         // matching the Termux/proot-distro ecosystem. Revisit with a native
         // library-dir launch strategy if a higher targetSdk becomes required.
         targetSdk = 28
-        versionCode = 22
-        versionName = "0.5.0"
+        versionCode = 23
+        versionName = "0.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "REMOTE_CONTROL_DEFAULT_URL", "\"https://zcode.z.ai/remote\"")
     }
 
     buildTypes {
-        debug {
-            buildConfigField("String", "REMOTE_CONTROL_DEFAULT_URL", "\"https://zcode.z.ai/remote\"")
-        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -83,10 +79,6 @@ android {
 
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
-    // Native shell: channel-protocol client over ws://127.0.0.1:3030/ws.
-    // OkHttp WebSocket (binary frames) — no other HTTP surface is added; all
-    // product traffic stays on the loopback server.
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Local runtime provisioning: tar extraction (rootfs/node/dist) + xz decoding.
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("org.tukaani:xz:1.10")
@@ -98,10 +90,6 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.camera.camera2)
-    implementation(libs.androidx.camera.lifecycle)
-    implementation(libs.androidx.camera.view)
-    implementation(libs.mlkit.barcode.scanning)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

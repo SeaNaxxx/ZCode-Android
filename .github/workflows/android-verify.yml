@@ -710,12 +710,14 @@ jobs:
             echo "offline precondition OK (8.8.8.8 unreachable) — every later success is download-free"
           '
 
-      - name: setup-tap | silent first-run provisioning offline (native shell, no tap)
+      - name: setup-tap | silent first-run provisioning offline (unified web surface, no tap)
         run: |
-          # Native-shell UX (Phase 2): there is deliberately NO "Set up local
-          # runtime" button — the app provisions silently on first open. The
-          # device-side evidence is unchanged: the provision-complete marker
-          # must appear OFFLINE (embedded assets, airplane mode).
+          # Unified product surface (owner decision 2026-11-04): the app boots
+          # straight into silent provisioning on first open — there is
+          # deliberately NO "Set up local runtime" button anywhere in the
+          # product. The device-side evidence is unchanged: the
+          # provision-complete marker must appear OFFLINE (embedded assets,
+          # airplane mode).
           source /tmp/verify-stage-lib.sh
           stage_run setup-tap -- bash -c '
             set -e
@@ -735,8 +737,8 @@ jobs:
             echo "--- provisioning marker (device-side evidence) ---"
             adb shell run-as '"$PKG"' cat files/runtime/provision-complete.json
             # Deliberate UX regression guard: the manual setup button must be GONE.
-            if ui_has_text "Set up local runtime"; then echo "FAIL: native shell still shows the manual setup button (silent first-run violated)"; exit 1; fi
-            echo "native first-run: silent provisioning VERIFIED (no setup button, offline)"
+            if ui_has_text "Set up local runtime"; then echo "FAIL: the manual setup button re-appeared (silent first-run violated)"; exit 1; fi
+            echo "unified first-run: silent provisioning VERIFIED (no setup button, offline)"
           '
 
       - name: node-probe | embedded node really runs (device-side evidence)
@@ -865,12 +867,13 @@ jobs:
             adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh node /data/local/tmp/verify-web-api-contract.cjs
           '
 
-      - name: frontend-smoke | open WebView fallback via marker, capture console + DOM state + HONEST render verdict
+      - name: frontend-smoke | open the web UI surface, capture console + DOM state + HONEST render verdict
         run: |
-          # Native-shell UX: the WebView is the explicit fallback route. The
-          # config-web-fallback marker (CI/diagnostic hook) boots the app
-          # straight into the fallback once the runtime is Running — same
-          # evidence chain as before, minus the removed product buttons.
+          # Unified product surface (owner decision 2026-11-04): the WebView
+          # IS the app — the config-web-fallback marker is kept staged for
+          # stage compatibility but is a no-op by construction (there is no
+          # native path to fall back FROM anymore). Same evidence chain as
+          # before: console, DOM state, invisible render probes, verdict.
           source /tmp/verify-stage-lib.sh
           stage_run frontend-smoke -- bash -c '
             set -e

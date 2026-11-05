@@ -13,6 +13,7 @@ import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,15 +25,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -46,17 +51,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.github.zcodeandroid.app.BuildConfig
-import io.github.zcodeandroid.app.R
-import io.github.zcodeandroid.app.local.LocalServerProbe
+import io.github.zcodeandroid.app.backup.ZcodeBackup
 import io.github.zcodeandroid.app.local.DiagLog
+import io.github.zcodeandroid.app.local.LocalServerProbe
 import io.github.zcodeandroid.app.local.LocalServerService
-import io.github.zcodeandroid.app.local.Provisioner
 import io.github.zcodeandroid.app.local.RuntimeBus
 import io.github.zcodeandroid.app.local.RuntimePaths
 import io.github.zcodeandroid.app.local.RuntimeState
@@ -69,22 +74,37 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** App-theme selector values — mirror MainActivity's persisted preference. */
+private const val THEME_SYSTEM = 0
+private const val THEME_LIGHT = 1
+private const val THEME_DARK = 2
+
 /**
- * Local-mode UI: honest runtime status, setup, start/stop, the OFFICIAL ZCode
- * web interface in a WebView, and a way to put real files into the workspace.
- * No simulated states, no fake buttons.
+ * Diagnostics overlay (unified product surface, owner decision 2026-11-04).
+ *
+ * The official ZCode web UI IS the product; this screen is the honest
+ * escape hatch reached from the web UI's overflow (⋮) menu: runtime log,
+ * workspace file import, backup/restore, app theme, and the diagnostics
+ * export. No simulated states, no fake buttons.
  */
 @Composable
 fun LocalApp(
-    onOpenRemote: () -> Unit,
-    onBackToNative: (() -> Unit)? = null,
+    onBackToWeb: () -> Unit,
+    openBackupSection: Boolean,
+    themeMode: Int,
+    onSetThemeMode: (Int) -> Unit,
 ) {
     val context = LocalContext.current
     val state by RuntimeBus.state.collectAsState()
     val logLines by RuntimeBus.log.collectAsState()
     val scope = rememberCoroutineScope()
-    var inWebView by remember { mutableStateOf(false) }
+    var backupNote by remember { mutableStateOf<String?>(null) }
+    var backupBusy by remember { mutableStateOf(false) }
     var copiedNote by remember { mutableStateOf<String?>(null) }
+
+    // System back returns to the web UI (the product surface), not out of
+    // the app — the runtime keeps running behind the foreground service.
+    BackHandler { onBackToWeb() }
 
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
@@ -108,9 +128,34 @@ fun LocalApp(
         }
     }
 
-    LaunchedEffect(Unit) {
-        if (Provisioner.isProvisioned(context) && state is RuntimeState.NotProvisioned) {
-            RuntimeBus.setState(RuntimeState.Ready)
+    val exportBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        backupBusy = true
+        scope.launch {
+            val result = ZcodeBackup.export(context, uri)
+            backupBusy = false
+            backupNote = result.fold(
+                onSuccess = { "backup exported: $it files (credentials excluded by policy)" },
+                onFailure = { "backup export failed: ${it.message}" },
+            )
+            RuntimeBus.append("backup export: $backupNote")
+        }
+    }
+    val importBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        backupBusy = true
+        scope.launch {
+            val result = ZcodeBackup.restore(context, uri)
+            backupBusy = false
+            backupNote = result.fold(
+                onSuccess = { "backup restored: $it files (integrity verified)" },
+                onFailure = { "backup restore failed: ${it.message}" },
+            )
+            RuntimeBus.append("backup restore: $backupNote")
         }
     }
 
@@ -126,13 +171,6 @@ fun LocalApp(
         }
     }
 
-    if (inWebView && state is RuntimeState.Running) {
-        val url = (state as RuntimeState.Running).url
-        BackHandler { inWebView = false }
-        LocalWebViewScreen(url = url, onExit = { inWebView = false })
-        return
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -141,132 +179,116 @@ fun LocalApp(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Spacer(Modifier.height(8.dp))
-        Text("Z AI ZCode", style = MaterialTheme.typography.headlineMedium)
+        Text("ZCode — diagnostics", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Local runtime — official ZCode web interface served on-device",
+            "The web UI is the product. This overlay holds the runtime log, " +
+                "workspace imports, backup/restore, and the app theme.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        when (val s = state) {
-            is RuntimeState.NotProvisioned -> {
-                StatusCard("Setup required")
-                if (RuntimePaths.hasBionicAssets(context)) {
-                    Text(
-                        "First run extracts the fully embedded Bionic runtime from this APK: " +
-                            "Node.js 24.22.1 + git + bash (Termux Bionic build, checksum-verified) and " +
-                            "the official ZCode distribution. No downloads — works in airplane mode.",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                } else {
-                    Text(
-                        "First run downloads and verifies: Ubuntu base (arm64) + Node.js " +
-                            "${RuntimePaths.NODE_VERSION} (checksums verified), then stages the official " +
-                            "ZCode distribution embedded in this APK. Needs a few hundred MB of storage.",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-                Button(
-                    onClick = {
-                        scope.launch { Provisioner.provision(context) }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Set up local runtime") }
-            }
+        TextButton(onClick = onBackToWeb) { Text("← Back to the web UI") }
 
+        when (val s = state) {
             is RuntimeState.Provisioning -> {
-                StatusCard("Setting up: ${s.step}")
+                Text("Setting up: ${s.step}", style = MaterialTheme.typography.titleSmall)
                 LinearProgressIndicator(
                     progress = { s.percent / 100f },
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text("${s.percent}%", style = MaterialTheme.typography.labelLarge)
             }
-
-            is RuntimeState.Ready, is RuntimeState.Stopped -> {
-                StatusCard(if (s is RuntimeState.Ready) "Ready" else "Stopped")
-                Button(
-                    onClick = {
-                        // The foreground service OWNS the runtime: it probes the
-                        // real server, adopts a healthy leftover, or starts one
-                        // node. The UI never spawns Node directly.
-                        LocalServerService.start(context)
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Start ZCode") }
-            }
-
-            is RuntimeState.Starting -> {
-                StatusCard("Starting ZCode runtime…")
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                OutlinedButton(onClick = {
-                    LocalServerService.stop(context)
-                }, modifier = Modifier.fillMaxWidth()) { Text("Cancel") }
-            }
-
-            is RuntimeState.Running -> {
-                StatusCard("Running — ${s.url}")
-                Button(
-                    onClick = { inWebView = true },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Open ZCode") }
-                // Standalone-server contract (upstream project-storage CONTRACT.md):
-                // the --web entry runs with a remote ownerHostId, so task creation
-                // REQUIRES a registered project (project.remote-project-required
-                // otherwise — Vivo log 2026-10-28 11:38). The supported path is the
-                // official Projects flow; no contract bypass is implemented.
-                Text(
-                    "Before the first task: in the web UI open Projects and add this " +
-                        "workspace as a project, then start chats from that project. " +
-                        "A bare composer session fails with 草稿会话创建失败 on a server.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedButton(onClick = {
-                    LocalServerService.stop(context)
-                }, modifier = Modifier.fillMaxWidth()) { Text("Stop runtime") }
-            }
-
-            is RuntimeState.Failed -> {
-                StatusCard("Failed — ${s.stage}")
-                Text(
-                    s.message,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Button(onClick = {
-                    scope.launch { Provisioner.provision(context) }
-                }, modifier = Modifier.fillMaxWidth()) { Text("Retry setup") }
-                TextButton(onClick = {
-                    RuntimeBus.setState(RuntimeState.Ready)
-                }) { Text("Skip to start (if files exist)") }
-            }
-        }
-
-        if (state is RuntimeState.Running || state is RuntimeState.Ready) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                OutlinedButton(onClick = { filePicker.launch(arrayOf("*/*")) }) {
-                    Text("Add files to workspace")
-                }
-            }
-            copiedNote?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall)
-            }
-            Text(
-                "Workspace: ${RuntimePaths.workspace(context).absolutePath} " +
-                    "(also bound inside the runtime as /workspace)",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+            is RuntimeState.Running -> Text(
+                "Runtime: running — ${s.url}",
+                style = MaterialTheme.typography.titleSmall
+            )
+            else -> Text(
+                "Runtime: ${s::class.simpleName}",
+                style = MaterialTheme.typography.titleSmall
             )
         }
 
-        Row(modifier = Modifier.fillMaxWidth()) {
-            TextButton(onClick = onOpenRemote) { Text("Remote control (official)") }
-            if (onBackToNative != null) {
-                TextButton(onClick = onBackToNative) { Text("Back to native UI") }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            OutlinedButton(onClick = { filePicker.launch(arrayOf("*/*")) }) {
+                Text("Add files to workspace")
+            }
+        }
+        copiedNote?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall)
+        }
+        Text(
+            "Workspace: ${RuntimePaths.workspace(context).absolutePath} " +
+                "(also bound inside the runtime as /workspace)",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            border = if (openBackupSection) {
+                BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+            } else null,
+            colors = CardDefaults.cardColors(),
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("Backup / restore", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Sessions, memory, and settings in a schema-versioned zip with " +
+                        "sha256 manifest. Credential material is excluded by policy. " +
+                        "Restore writes over the runtime data directory — stop the " +
+                        "runtime first (⋮ menu) for a clean round-trip.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                            exportBackup.launch("zcode-backup-$stamp.zip")
+                        },
+                        enabled = !backupBusy,
+                    ) { Text("Export") }
+                    OutlinedButton(
+                        onClick = { importBackup.launch(arrayOf("application/zip", "application/octet-stream")) },
+                        enabled = !backupBusy,
+                    ) { Text("Restore") }
+                }
+                if (backupBusy) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                backupNote?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("App theme", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = themeMode == THEME_SYSTEM,
+                    onClick = { onSetThemeMode(THEME_SYSTEM) },
+                    label = { Text("System") },
+                )
+                FilterChip(
+                    selected = themeMode == THEME_LIGHT,
+                    onClick = { onSetThemeMode(THEME_LIGHT) },
+                    label = { Text("Light") },
+                )
+                FilterChip(
+                    selected = themeMode == THEME_DARK,
+                    onClick = { onSetThemeMode(THEME_DARK) },
+                    label = { Text("Dark") },
+                )
             }
         }
 
@@ -288,11 +310,6 @@ fun LocalApp(
         Text("Runtime log", style = MaterialTheme.typography.titleSmall)
         LogConsole(logLines)
     }
-}
-
-@Composable
-private fun StatusCard(text: String) {
-    Text(text, style = MaterialTheme.typography.titleMedium)
 }
 
 /**
@@ -377,20 +394,30 @@ private fun LogConsole(lines: List<String>) {
  * JavaScript console message, every resource/HTTP error, renderer death, and
  * a post-load DOM snapshot (element counts + visible text + UA) — without
  * touching any credential storage. All evidence goes to WebDiagnostics.
+ *
+ * Unified product surface (owner decision 2026-11-04): this full-screen
+ * WebView IS the app. The overflow (⋮) menu exposes the only navigation
+ * surfaces outside the page itself: the upstream bundle's own phone-first
+ * entry (/remote), the desktop entry (/), the diagnostics overlay,
+ * backup/restore, and an explicit stop — every one of them loopback-only
+ * (loopback-only URL policy is enforced by construction: the menu navigates
+ * only to http://127.0.0.1:$SERVER_PORT routes).
  */
 @Composable
-fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
+fun LocalWebViewScreen(url: String, onOpenDiagnostics: (openBackup: Boolean) -> Unit) {
     // Owner directive (2026-10-31): the "ZCode — local" status strip ate a
-    // slice of the interface — the official web UI must be FULL-SCREEN. Exit
-    // stays available through the system back gesture (BackHandler in
-    // LocalApp). Only the system status bar height is reserved, so the page
-    // never draws under the clock/battery.
+    // slice of the interface — the official web UI must be FULL-SCREEN.
+    // Only the system status bar height is reserved, so the page never draws
+    // under the clock/battery.
+    val context = LocalContext.current
     Box(
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.statusBars)
     ) {
         var filePathCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+        var webViewRef by remember { mutableStateOf<WebView?>(null) }
+        var overflowOpen by remember { mutableStateOf(false) }
         val chooserLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
@@ -405,6 +432,15 @@ fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
             runCatching { cb.onReceiveValue(parsed ?: arrayOf()) }
                 .onFailure { WebDiagnostics.log("webview", "chooser callback failed: ${it.message}") }
         }
+
+        /** Loopback-only in-app navigation (menu surface). */
+        fun navigateTo(path: String) {
+            val wv = webViewRef ?: return
+            val target = "http://127.0.0.1:${RuntimePaths.SERVER_PORT}$path"
+            WebDiagnostics.log("webview", "overflow navigate -> $target")
+            wv.loadUrl(target)
+        }
+
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -753,9 +789,73 @@ fun LocalWebViewScreen(url: String, onExit: () -> Unit) {
                         }
                     }, 2_000)
                     WebDiagnostics.log("webview", "created; will load $effectiveUrl on first layout (failure-3 fix)")
+                }.also { created ->
+                    // Keep a reference for the overflow menu's loopback-only
+                    // navigation (mobile /remote route, desktop /).
+                    webViewRef = created
                 }
             }
         )
+
+        // Overflow (⋮) menu — the app-side navigation surface over the unified
+        // web UI. Placed under the status bar at the top-end; small footprint
+        // over the page's own top bar, with a full-size touch target.
+        Box(
+            modifier = Modifier.align(Alignment.TopEnd)
+        ) {
+            IconButton(
+                onClick = { overflowOpen = true },
+                modifier = Modifier.padding(end = 4.dp),
+            ) {
+                Text(
+                    "⋮",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            DropdownMenu(
+                expanded = overflowOpen,
+                onDismissRequest = { overflowOpen = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Mobile UI (/remote)") },
+                    onClick = {
+                        overflowOpen = false
+                        navigateTo("/remote")
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Desktop UI (/)") },
+                    onClick = {
+                        overflowOpen = false
+                        navigateTo("/")
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Diagnostics") },
+                    onClick = {
+                        overflowOpen = false
+                        onOpenDiagnostics(false)
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Backup / restore") },
+                    onClick = {
+                        overflowOpen = false
+                        onOpenDiagnostics(true)
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Stop runtime") },
+                    onClick = {
+                        overflowOpen = false
+                        WebDiagnostics.log("webview", "overflow: stop runtime requested")
+                        RuntimeBus.append("overflow menu: stopping runtime")
+                        LocalServerService.stop(context)
+                    },
+                )
+            }
+        }
     }
 }
 

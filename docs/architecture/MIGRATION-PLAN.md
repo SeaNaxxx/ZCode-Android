@@ -1,5 +1,22 @@
 # Migration Plan
 
+> **Direction update (owner decision 2026-11-04 — supersedes success
+> criterion #1).** The product surface is UNIFIED on the official ZCode web
+> UI: ONE interface, the upstream web bundle served by the local server and
+> rendered full-screen in the WebView, with phone adaptation via a
+> conservative self-gating CSS layer and the upstream mobile route
+> (`/remote`) one tap away in the overflow menu. The Phase 2 native shell
+> and the relay remote-control client are REMOVED from the product path
+> (the 0.5.0 native shell stays parked in git history, tag 0.5.0). The
+> WebView inherits the upstream settings surface (plugins, MCP, skills,
+> hooks, usage) for free — rebuilding it natively would take months and
+> drift from upstream. Success criterion #1 ("No WebView in any primary
+> product flow") is superseded by: *the web UI is the product; app-side
+> code shrinks to the runtime host + diagnostics overlay.* The phases
+> below remain the historical record of the native direction and the
+> runtime-engineering groundwork that still applies (provisioning,
+> storage, backup, release engineering).
+
 Transition from "Android host of the upstream ZCode web UI" to an
 independent native Android agent platform, in four phases that never break
 the current build or the existing device workflow. Owner direction
