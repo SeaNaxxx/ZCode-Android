@@ -136,11 +136,18 @@ class NativeProtocolProbeTest {
             val second = ZcodeRpcClient("ws://127.0.0.1:3030/ws", scope)
             concurrent = second
             second.connect()
+            // Probe spacing must fit INSIDE the mock turn: run 42097957584
+            // proved the full chat round now completes in ~7-9s (sentinel +
+            // task_complete via the Kotlin client), so 8s spacing allowed
+            // only ONE readProjects round-trip before the coexistence
+            // assertion — the criterion starved on pacing, not on protocol.
+            // 2s spacing keeps >= 2 REAL concurrent round-trips during the
+            // turn (coexistence proof stays honest, nothing weakened).
             val concurrentOk = AtomicInteger(0)
             val concurrentJob = scope.launch {
                 while (isActive) {
                     if (second.healthProbe(8_000L)) concurrentOk.incrementAndGet()
-                    delay(8_000L)
+                    delay(2_000L)
                 }
             }
 

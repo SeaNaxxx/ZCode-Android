@@ -472,7 +472,10 @@ jobs:
             local rc=$?
             set -e
             if [ $rc -eq 0 ]; then _emit_result "$name" "PASS" "$rc" "see $log";
-            else _emit_result "$name" "FAIL" "$rc" "see $log"; tail -n 40 "$log"; fi
+            # 120 lines (run 42097957584): the 40-line window cut the JUnit
+            # verdict + the FAIL-branch echo whenever the logcat dump itself
+            # was 80 lines, hiding WHICH assertion failed from the step log.
+            else _emit_result "$name" "FAIL" "$rc" "see $log"; tail -n 120 "$log"; fi
             echo "::endgroup::"
             return $rc
           }

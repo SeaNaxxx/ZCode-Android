@@ -619,3 +619,55 @@ deferPersistenceUntilFirstPrompt (§11.6) and the void-ack fix (§11.7)
 all held; the failure moved one hop further into the client's event
 subscription encoding. Fourth distinct defect in the probe chain, each
 exposed exactly when the previous hop started passing.
+
+### 11.9 The chat round PASSED — coexistence assertion starved on pacing (run 42097957584)
+
+The single-arg EventListen fix (§11.8) held. native-protocol failed in
+10.6s instead of the previous 307s, and the stage log tells a
+completely different story — the REAL chat round through the restored
+Kotlin WS client COMPLETED:
+- events streamed to the Kotlin listener (kinds=[Bash, Write,
+  agent_message_chunk, glm_agent_model_state_update, mode_update,
+  permission_response, session_info_update, task_complete,
+  task_network_debug_status, task_run_started]) — zero-event defect gone;
+- TWO real permission_request frames arrived ("High risk tools require
+  explicit approval", Bash), the probe answered respondPermission
+  allow_once, the server accepted (-> true), and the turn CONTINUED
+  after each grant — the full sendPrompt -> stream ->
+  respondPermission loop from the P0 exit definition;
+- `agent_message_chunk content=VERIFY-MOCK-DONE — all three tool steps
+  dispatched (Write/Bash/Bash git)` then `task_complete
+  stopReason=success`.
+
+The stage still failed because the probe's LAST log line is
+"event types observed" with no NATIVE-PROBE-PASS summary after it:
+the next statement is
+`assertTrue("concurrent native client readProjects succeeded only N
+time(s)", concurrentOk.get() >= 2)`. The mock turn now finishes in
+~7-9s, while the concurrent client's probe loop waited 8s BETWEEN
+healthProbes — only ONE round-trip could complete before the
+assertion ran. The coexistence criterion starved on pacing, not on
+protocol: the same loop was untestable-against in earlier runs only
+because the turn timed out at 300s and the counter had minutes to
+accumulate. Fifth distinct defect in the probe chain, and the first
+that is a test-harness pacing bug rather than a wire/contract defect.
+
+Evidence-visibility note: the JUnit verdict was cut from the step log
+by stage_run's `tail -n 40` — the FAIL-branch logcat dump (80 lines)
+pushed the "FAIL:" echo and the instrument summary outside the
+window, so the step log showed only event lines. The reconstruction
+above comes from the logcat sequence (last probe line =
+"event types observed", summary line absent). stage_run now tails
+120 lines.
+
+Honest observations recorded (not gating):
+- the mock turn's scripted Write tool call reported
+  `status=failed, error=File has not…` inside the probe session; the
+  mock continued (Bash marker + git commit) and the task completed
+  with stopReason=success. The probe asserts the protocol round, not
+  mock tool outcomes — agent-effects separately proves tool effects
+  on disk for its own session. Recorded verbatim per the evidence
+  ledger.
+- the concurrent-probe pacing fix (8s -> 2s spacing) keeps the >= 2
+  REAL readProjects round-trips requirement unchanged; nothing was
+  weakened, removed, or bypassed.

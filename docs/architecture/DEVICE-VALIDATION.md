@@ -18,7 +18,7 @@ diag report) + `adb logcat` for the tagged lines.
 | 1 | Cold startup, silent provisioning | no setup button; `provision-complete.json` marker | CI-verified (setup-tap) |
 | 2 | Runtime readiness | server answers 200 on loopback; `[register]` VERIFIED line | CI-verified (start-tap) |
 | 3 | Native surface renders | logcat `NativeConversation surface visible dark=…` | CI-verified (frontend-smoke + dark-mode, run 42071111737; crash fix per §11.3) |
-| 4 | Conversation creation | first prompt creates a task (`createTask -> taskId=…` in diag log) | **fix chain advancing**: run 42092285488 proved createTask + FK admission + sendPrompt ack all pass (§11.5–§11.7); event subscription body was wrapped in a positional array → silent zero-event delivery — single-arg EventListen fix in flight (§11.8); verdict next run |
+| 4 | Conversation creation | first prompt creates a task (`createTask -> taskId=…` in diag log) | **chat round PASSED in run 42097957584**: events streamed, 2 permission grants honored, VERIFY-MOCK-DONE + task_complete via the Kotlin client (§11.9); only the probe's own coexistence pacing starved (8s probe spacing vs ~8s turn) — fix in flight; verdict next run |
 | 5 | Streaming responses | assistant text appears incrementally (agent_message_chunk rows) | CI-verified with mock; **device verdict pending** (real provider) |
 | 6 | Agent activity | tool rows: running→completed; titles legible | CI-verified (agent-effects effects on disk) |
 | 7 | Permission requests | approval card appears, option button resolves it, turn continues | CI-verified path; **device verdict pending** |
