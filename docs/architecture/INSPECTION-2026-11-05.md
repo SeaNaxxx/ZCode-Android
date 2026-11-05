@@ -559,3 +559,63 @@ genuinely elapsed timeout yields null from withTimeoutOrNull. The
 deadlineMs PendingCall field was dead (never checked) and is now
 explicitly unused; a real watchdog remains future work (P7) and is
 NOT part of this fix.
+
+### 11.8 EventListen subscription args wrapped in a positional array → silent zero-event delivery (run 42092285488)
+
+The void-ack fix worked: `sendPrompt accepted` with no timeout, and the
+probe survived the full 300s collection window. The failure moved to the
+event path: `sentinel 'VERIFY-MOCK-DONE' never observed within 300s
+(kinds=[]; ...)` with `event types observed: []` — ZERO
+onDynamicTaskEvent frames of any kind, while createTask was accepted
+(`taskId=session_3ae2d8d7-…`, `workspace project resolution ->
+1fcbcfe9-…`) and the concurrent second client kept answering.
+
+Crucial scope fact: every earlier "green" stage that involves the agent
+loop exercises the runtime WITHOUT the Kotlin event path — agent-loop
+drives `zcode.cjs` through a Node driver (verify-agent-driver.cjs),
+agent-effects reads files on disk, second-send drives the WS RPC
+boundary with the proven JS client and explicitly ignores events
+(verify-second-send.cjs: "events / anything else: ignore"). The probe
+is the FIRST stage to exercise Kotlin-side event delivery end-to-end,
+which is why the defect surfaced only now.
+
+Root cause (pinned 3c5b227649371507ddc4eb46ac5133afe6db1cab):
+ZcodeRpcClient.sendListen serialized the EventListen body with the
+Promise-call convention — `listOf(arg)` — but the two request types do
+NOT share a body shape:
+- channelClient.ts sendRequest (L179-194): `serialize(writer, arg)` —
+  the arg as-is. For Promise calls the caller (proxy-channel.ts
+  toService) passes the positional-args ARRAY; for EventListen the
+  caller passes the SINGLE subscription object.
+- channelServer.ts onEventListen (L208-212): passes `request.arg`
+  straight to `channel.listen(ctx, name, arg)`.
+- proxy-channel.ts fromService (L62-83): dynamic events call
+  `target.call(handler, arg)` — one value, the params object.
+- zcodeTaskServiceAdapter.ts onDynamicTaskEvent (L3119-3124) reads
+  `params.taskId` / `params.workspacePath` directly.
+
+With the wrapper, the adapter received `[{workspacePath, taskId,
+clientId}]` — an Array — so `params.taskId` was undefined and the
+subscription was keyed to `{taskId: undefined, workspacePath:
+undefined}` (rememberTaskTarget) with the upstream
+onDynamicSessionEvent subscription asking for sessionId=undefined. No
+event ever matches; the server neither fires EventFire nor returns an
+error (onEventListen has no failure reply), so the client sat silent
+for 300s. toZCodeDeliveryKind(undefined) is safe
+(→ "desktop-continuous"), ruling out a second failure mode.
+
+Fix (client-side wire shape, no bypass, no server change): sendListen
+serializes the subscription argument AS-IS
+(`Vql.serializeInto(payloadOut, arg)`); null maps to TAG_UNDEFINED,
+matching the official client's `serialize(writer, undefined)` for
+arg-less static events. The same one-line contract fix covers
+workspaceEvents (onDynamicWorkspaceEvent takes the single params
+object too). This also repairs the PRODUCT streaming path —
+ConversationModel uses the same api.taskEvents subscription, which had
+been silently receiving nothing since the client stack was restored.
+
+Disposition of run 42092285488: createTask/projectId (§11.5) and
+deferPersistenceUntilFirstPrompt (§11.6) and the void-ack fix (§11.7)
+all held; the failure moved one hop further into the client's event
+subscription encoding. Fourth distinct defect in the probe chain, each
+exposed exactly when the previous hop started passing.

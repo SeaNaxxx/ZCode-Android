@@ -407,7 +407,19 @@ class ZcodeRpcClient(
     private fun sendListen(id: Int, channel: String, event: String, arg: Any?) {
         val payloadOut = ByteArrayOutputStream()
         Vql.serializeInto(payloadOut, listOf(REQUEST_EVENT_LISTEN, id, channel, event))
-        Vql.serializeInto(payloadOut, if (arg == null) emptyList<Any?>() else listOf(arg))
+        // EventListen body = the SINGLE subscription argument serialized AS-IS
+        // (pinned 3c5b227: channelClient.ts sendRequest -> serialize(writer, arg);
+        // channelServer.ts onEventListen passes request.arg straight to
+        // channel.listen; proxy-channel.ts dynamic events invoke
+        // onDynamicXxx(arg) with that one value). The Promise convention of
+        // wrapping positional args in an array does NOT apply here: wrapping
+        // made the adapter's onDynamicTaskEvent(params) read params.taskId off
+        // an Array -> undefined, keying the subscription to nothing. The server
+        // neither fires events nor returns an error — silent zero-event
+        // delivery (run 42092285488: sendPrompt acked, kinds=[] over 300s).
+        // null serializes to TAG_UNDEFINED, exactly the official
+        // serialize(writer, undefined) for arg-less static events.
+        Vql.serializeInto(payloadOut, arg)
         sendFrame(payloadOut.toByteArray())
     }
 
