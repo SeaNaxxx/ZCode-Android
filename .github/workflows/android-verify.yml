@@ -813,8 +813,10 @@ jobs:
             done
             shot running
             [ "$OK" = "1" ] || { echo "embedded server never answered 200 on loopback"; adb logcat -d | tail -40; exit 1; }
-            # Native shell regression guard: no manual start button anymore.
-            if ui_has_text "Start ZCode"; then echo "FAIL: native shell still shows the manual Start button (silent auto-start violated)"; exit 1; fi
+            # Unified-surface regression guard: no manual start button while the
+            # runtime auto-starts (the stopped-state restart path is a separate,
+            # deliberate flow).
+            if ui_has_text "Start ZCode"; then echo "FAIL: manual Start button visible while runtime auto-starts (silent auto-start violated)"; exit 1; fi
             sleep 3
             # PROJECT REGISTRATION (official saveProject RPC): upstream gives
             # the standalone HTTP server a remote-style storage identity, so
@@ -1057,8 +1059,8 @@ jobs:
 
       - name: mobile-ui-probe | cheap experiment — boot the upstream mobile route (/remote)
         run: |
-          # External review condition 6 (2026-11): before any native shell,
-          # test the CHEAPEST mobile-UI option first. Finding (condition 5):
+          # External review condition 6 (2026-11): before choosing any native
+          # shell, test the CHEAPEST mobile-UI option first. Finding (condition 5):
           # the upstream web bundle ships BOTH UIs — the route /remote boots
           # the built-in web-remote-control (mobile) entry from the SAME dist
           # (packages/web/src/web-remote-control + shared
@@ -1206,7 +1208,7 @@ jobs:
               sleep 3
             done
             shot after-restart
-            [ "$OK" = "1" ] || { echo "FAIL: runtime did not re-answer on loopback after restart (native shell)"; adb logcat -d | tail -30; exit 1; }
+            [ "$OK" = "1" ] || { echo "FAIL: runtime did not re-answer on loopback after restart"; adb logcat -d | tail -30; exit 1; }
             AFTER=$(adb shell run-as '"$PKG"' sha256sum files/runtime/provision-complete.json | cut -d" " -f1)
             echo "marker sha after restart:  $AFTER"
             [ "$BEFORE" = "$AFTER" ] || { echo "FAIL: marker changed — re-provision happened"; exit 2; }
