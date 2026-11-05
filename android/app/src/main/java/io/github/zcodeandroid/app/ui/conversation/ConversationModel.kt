@@ -322,7 +322,24 @@ class ConversationViewModel(
             }
             var taskId = _state.value.selectedTaskId
             if (taskId == null) {
-                val created = runCatching { api.createTask(workspacePath) }
+                // Standalone-server contract (upstream remote-policy, no
+                // bypass): createTask must carry the registered project that
+                // owns the workspace root (run 42071111737 evidence). The
+                // server auto-registers the workspace on every start; if the
+                // resolution still fails, say so instead of sending a request
+                // that is guaranteed to be rejected.
+                val projectId = runCatching { api.resolveProjectId(workspacePath) }
+                    .getOrElse { e ->
+                        RuntimeBus.append("project resolution failed: ${e.message}")
+                        _state.update { it.copy(sendError = "project lookup failed: ${e.message}") }
+                        return@launch
+                    }
+                if (projectId == null) {
+                    RuntimeBus.append("project resolution: workspace not registered as a project yet")
+                    _state.update { it.copy(sendError = "workspace is not registered as a project yet") }
+                    return@launch
+                }
+                val created = runCatching { api.createTask(workspacePath, projectId) }
                     .getOrElse { e ->
                         RuntimeBus.append("createTask failed: ${e.message}")
                         _state.update { it.copy(sendError = "task creation failed: ${e.message}") }

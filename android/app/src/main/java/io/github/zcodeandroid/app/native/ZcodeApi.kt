@@ -27,6 +27,38 @@ class ZcodeApi(private val rpc: ZcodeRpcClient) {
         return rpc.call(CHANNEL_PROJECT, "readProjects") as? List<Map<String, Any?>> ?: emptyList()
     }
 
+    /**
+     * Official project resolution before createTask (ENGINEERING-NOTES §5.3:
+     * "register the workspace as a project … then start tasks from that
+     * project"). Upstream remote-policy (project-storage/remote-policy.ts
+     * assertRemoteTaskDirectories via reserveCreatedTask) rejects task
+     * creation on a standalone server with `project.remote-project-required`
+     * unless the createTask params carry the projectId of a registered,
+     * non-deleted project with EXACTLY one root equal to the workspace path.
+     * Run 42071111737: the probe sent no projectId and hit exactly that
+     * rejection. This mirrors the official Projects UI path — no protocol
+     * bypass, no upstream change.
+     */
+    fun findRegisteredProjectId(
+        projects: List<Map<String, Any?>>,
+        workspacePath: String,
+    ): String? {
+        for (project in projects) {
+            if (project["deleted"] == true) continue
+            val id = project["id"] as? String ?: continue
+            val roots = project["roots"] as? List<*> ?: continue
+            val rootPaths = roots
+                .filterIsInstance<Map<String, Any?>>()
+                .mapNotNull { it["rootPath"] as? String }
+            // remote-policy: remote sessions allow exactly one fixed root.
+            if (rootPaths.size == 1 && rootPaths[0] == workspacePath) return id
+        }
+        return null
+    }
+
+    suspend fun resolveProjectId(workspacePath: String): String? =
+        findRegisteredProjectId(readProjects(), workspacePath)
+
     // ------------------------------------------------------------------ tasks
 
     suspend fun initializeWorkspace(workspacePath: String): Map<String, Any?> {
@@ -44,15 +76,24 @@ class ZcodeApi(private val rpc: ZcodeRpcClient) {
             mapOf("workspacePath" to workspacePath),
         ) as? List<Map<String, Any?>> ?: emptyList()
 
-    /** createTask params per IZCodeTaskService.createTask (pinned source). */
-    suspend fun createTask(workspacePath: String): Map<String, Any?> {
+    /**
+     * createTask params per IZCodeTaskService.createTask (pinned source);
+     * projectId is an official param and is REQUIRED on standalone servers
+     * (remote-policy asserts a registered project — see
+     * findRegisteredProjectId). Sent only when resolved: the wire keeps the
+     * "no projectId" shape a caller that has none, so upstream behavior is
+     * never masked.
+     */
+    suspend fun createTask(workspacePath: String, projectId: String? = null): Map<String, Any?> {
         @Suppress("UNCHECKED_CAST")
+        val params = buildMap<String, Any?> {
+            if (projectId != null) put("projectId", projectId)
+            put("workspacePath", workspacePath)
+            put("permissionScope", "session")
+        }
         return rpc.call(
             CHANNEL_ZCODE_TASK, "createTask",
-            mapOf(
-                "workspacePath" to workspacePath,
-                "permissionScope" to "session",
-            ),
+            params,
         ) as? Map<String, Any?> ?: emptyMap()
     }
 

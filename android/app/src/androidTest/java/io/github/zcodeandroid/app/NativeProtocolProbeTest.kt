@@ -156,7 +156,20 @@ class NativeProtocolProbeTest {
                 .onSuccess { log("listTasks -> ${it.size} existing task(s)") }
                 .onFailure { log("listTasks error (logged, non-fatal): ${it.message}") }
 
-            val task = api.createTask(wsPath)
+            // Standalone-server contract (remote-policy.ts, no bypass): task
+            // creation requires the registered project that owns the
+            // workspace root — run 42071111737 failed exactly here with
+            // project.remote-project-required when no projectId was sent.
+            val projectId = api.resolveProjectId(wsPath)
+            log("workspace project resolution -> ${projectId ?: "NONE"}")
+            if (projectId == null) {
+                fail(
+                    "no registered project owns exactly the workspace root " +
+                        "(projects=${short(projects)}); createTask on a standalone " +
+                        "server requires it (upstream remote-policy)",
+                )
+            }
+            val task = api.createTask(wsPath, projectId)
             val taskId: String = (task["taskId"] as? String)
                 ?: (task["id"] as? String)
                 ?: ((task["task"] as? Map<*, *>)?.get("taskId") as? String)

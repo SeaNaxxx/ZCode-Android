@@ -465,3 +465,36 @@ never created. The diagnostics chain's persisted-evidence leg was
 silently dead since 2cce09e. Fix: the foreground service — the
 runtime's owner — installs the sink in onStartCommand (idempotent),
 before ensureRuntime() spawns node, so every boot log line persists.
+
+### 11.5 createTask rejected without a registered projectId (run 42071111737)
+
+With the console sink restored (§11.4), the run advanced further than
+any predecessor: frontend-smoke, diag-collector (webconsole.log now
+exists on device), dark-mode (both schemes on the native surface),
+agent-loop, agent-effects and second-send all PASSED. The first
+failure moved to native-protocol: the probe's `createTask` was
+rejected with `ZcodeRpcClient$RpcError: project.remote-project-required`
+after WS READY -> readProjects (2 registered projects) ->
+initializeWorkspace ok -> listTasks (0 tasks).
+
+Root cause from the pinned upstream source (3c5b2276): the CI patch
+(`0001-project-route-local-alias…`) aliases `hostId === "local"` only
+inside `route()` (project/index.ts), which covers readTree and
+resolveSessionDirectories — exactly why second-send passes. Task
+CREATION goes through a different path: `prepareSessionCreation` ->
+`reserveCreatedTask` (project-repository.ts) -> `assertRemoteTaskDirectories`
+(remote-policy.ts), which throws `project.remote-project-required`
+when the standalone server's remote-style ownerHostId meets a null
+project. The pinned IZCodeTaskService.createTask declares an official
+`projectId` param; the official Projects UI resolves the project that
+owns the workspace root and sends its id. The native probe (and
+ConversationModel.send) sent only `{workspacePath, permissionScope}` —
+a guaranteed rejection by upstream design (ENGINEERING-NOTES §5.3,
+"no bypass" already documented).
+
+Fix (supported path, no upstream change): ZcodeApi gains
+`findRegisteredProjectId`/`resolveProjectId` — selects the non-deleted
+project with EXACTLY one root equal to the workspace path (the shape
+remote-policy accepts) — and `createTask(wsPath, projectId)`; the
+probe and the product send path resolve the projectId first and fail
+with a precise message when the workspace is not registered.
