@@ -36,6 +36,22 @@ diag report) + `adb logcat` for the tagged lines.
 | 19 | Real provider turn | one real (non-mock) authenticated turn on the phone | **owner-only** (billing/auth not exercised in CI by design) |
 | 20 | Accessibility | talk-over of the main screen: labels present | pending device |
 
+## Results matrix (per device session, per REVISED §5 Phase 6)
+
+Each device run is recorded as one matrix block. A run without this
+block is not reviewable evidence.
+
+```yaml
+run_id: <date>-<short commit>        # e.g. 2026-11-06-cbf81f5
+build: { commit: <sha>, versionName: <x.y.z>, versionCode: <n> }
+device: { model: Vivo V2035, abi: arm64-v8a, android: 13 }
+evidence_class: device-verified      # never promoted from CI results
+rows:                                # one entry per checklist row above
+  - { id: 1, result: PASS|FAIL, evidence: "<logcat tag / screenshot ref>" }
+limitations: <what this run did not cover>
+logs: <diag report reference / logcat capture location>
+```
+
 ## How to record
 
 1. Run through the table on the acceptance device; for each row mark
