@@ -898,8 +898,12 @@ jobs:
           # Native-only product surface (owner decision 2026-11-05, REVISED
           # architecture §5 Phase 2): the product is the Compose conversation
           # screen backed by the local runtime. Evidence: the screen's own
-          # "NativeConversation surface visible" logcat marker and a
+          # "NativeConversation: surface visible" logcat marker and a
           # fatal-free launch. The WebView is no longer a product surface.
+          # NOTE: logcat threadtime renders tag and message as
+          # "NativeConversation: surface visible ..." — the colon is part of
+          # the output format, so the pattern must tolerate it (run 41990196616
+          # failed on exactly this: grep used a space, logcat has ": ").
           source /tmp/verify-stage-lib.sh
           stage_run frontend-smoke -- bash -c '
             set -e
@@ -910,7 +914,7 @@ jobs:
             OKN=0
             for i in $(seq 1 40); do
               adb logcat -d > "$LOGS_DIR/frontend-smoke-logcat.txt" 2>/dev/null || true
-              if grep -q "NativeConversation surface visible" "$LOGS_DIR/frontend-smoke-logcat.txt" 2>/dev/null; then OKN=1; echo "native surface visible after ~$((i*3))s"; break; fi
+              if grep -Eq "NativeConversation:? surface visible" "$LOGS_DIR/frontend-smoke-logcat.txt" 2>/dev/null; then OKN=1; echo "native surface visible after ~$((i*3))s"; break; fi
               dismiss_anr || true
               sleep 3
             done
@@ -1271,7 +1275,7 @@ jobs:
               "node-probe": "embedded node/git/bash exec on Android userspace (criterion 2; ARM64 proof deferred to device)",
               "openssl-offline": "OpenSSL init inside app runtime + verified TLS handshake, ZERO network (failure-2 acceptance; Termux-path leak = FAIL)",
               "start-tap": "official ZCode --web + embedded mock on-device",
-              "frontend-smoke": "native product surface (Compose conversation screen) renders after silent auto-start; marker: NativeConversation surface visible; no fatals (native-only decision 2026-11-05)",
+              "frontend-smoke": "native product surface (Compose conversation screen) renders after silent auto-start; marker: NativeConversation: surface visible; no fatals (native-only decision 2026-11-05)",
               "dark-mode": "system dark reaches the app AND the native surface (A/B: light->dark=false, dark->dark=true via the ConversationScreen marker; targetSdk-28 night-mode legacy behavior)",
               "frontend-smoke-b": "RETIRED with the WebView product surface (native-only 2026-11-05): the viewport-collapse A/B was WebView-specific; edge-to-edge now rides standard Compose insets",
               "agent-loop": "real agent loop end-to-end (mock model; auth/billing NOT exercised)",
