@@ -448,3 +448,20 @@ grep-pattern defect. Fix: explicit `ViewModelProvider.Factory` per VM
 `RuntimePaths.workspace(ctx).absolutePath`) passed at both MainActivity
 call sites. Deterministic-crash class: any future `viewModel()` of a
 parameterized VM must pass a factory — recorded as a review rule.
+
+### 11.4 Persisted console sink lost with the WebView host (run 42062089430)
+
+With the view-model crash fixed (§11.3), frontend-smoke PASSED — the
+native conversation surface renders and the `NativeConversation:
+surface visible` marker appears (first on-device/CI proof of the
+native product surface). The run then failed one stage later:
+diag-collector "FAIL: webconsole.log missing on device". Root cause:
+`WebDiagnostics.initFileSink()` was installed only from the WebView
+host; the native-only migration deleted that host and nobody
+re-installed the sink, so `WebDiagnostics.log()` still fed
+DiagLog/RuntimeBus/logcat (the ZCodeWeb [tls]/[register]/[probe] lines
+start-tap greps) but the persisted `files/logs/webconsole.log` was
+never created. The diagnostics chain's persisted-evidence leg was
+silently dead since 2cce09e. Fix: the foreground service — the
+runtime's owner — installs the sink in onStartCommand (idempotent),
+before ensureRuntime() spawns node, so every boot log line persists.
