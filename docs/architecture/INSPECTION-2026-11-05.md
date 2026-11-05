@@ -390,3 +390,15 @@ Restored from the 0.5.0 tag per §3 (commit `901cedc`): `protocol/Vql.kt`,
   `optionId`) is REFERENCED from pinned source; the probe treats any
   unrecognized shape as log-only evidence, never a guess. Product
   surface untouched: instrumented test only.
+
+### 11.1 Codec fix from the first CI run (2026-11-05)
+
+The first CI execution of VqlTest caught three real defects in the
+restored 0.5.0-era decode path (the probable 0.5.0 chat-cycle failure
+class): JSON `null` literals decoded to the `JSONObject.NULL` sentinel
+instead of Kotlin null; org.json number-type variance (Maven
+BigDecimal/Long vs Android Integer/Long/Double) leaked untyped values;
+and the varint test corpus compared `List<Byte>` against `List<Int>`.
+Fixed by normalizing decoded numbers to the JS-like Kotlin types
+(integral → Int/Long, fractional → Double) and routing scalar literals
+through the null-mapping converter (`ae6f05d`). Unit tests CI-green.
