@@ -21,6 +21,18 @@ android {
         // Linux userland (proot -> node) permitted on Android 10+ (W^X policy),
         // matching the Termux/proot-distro ecosystem. Revisit with a native
         // library-dir launch strategy if a higher targetSdk becomes required.
+        // Documented targetSdk strategy (REVISED Phase 9, owner device gate):
+        //  (1) Do NOT raise targetSdk until the Bionic node runs from a
+        //      library-dir / extracted-native-libs path (the W^X exec()
+        //      allowance at 28+ no longer covers app-writable storage), proven
+        //      by the runNodeProbe gate on the Vivo V2035 (Android 13/33).
+        //  (2) Until then, legacy storage semantics stay load-bearing: the
+        //      READ/WRITE_EXTERNAL_STORAGE pair is how the runtime reads
+        //      /sdcard/Download. Raising past 28 re-scopes external storage
+        //      and breaks that read path without a SAF re-import fallback.
+        //  (3) Dark-mode workaround (UiModeManager, MainActivity) exists
+        //      precisely because pre-Q targets do not receive system night
+        //      mode in Configuration — it retires together with targetSdk 28.
         targetSdk = 28
         versionCode = 23
         versionName = "0.6.0"

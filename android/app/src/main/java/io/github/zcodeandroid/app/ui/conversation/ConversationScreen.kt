@@ -505,6 +505,10 @@ private fun PermissionCardView(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            // P3 design note: options list is a Row while options are <= 3
+            // (upstream permission prompts offer <= 3). With wider sets this
+            // would overflow horizontally — use FlowRow if that ever changes
+            // (documented in NATIVE-UI-INTEGRATION §4.4).
             Row(horizontalArrangement = Arrangement.spacedBy(ZcodeThemeValues.spacing.sm)) {
                 item.options.forEach { option ->
                     androidx.compose.material3.Button(

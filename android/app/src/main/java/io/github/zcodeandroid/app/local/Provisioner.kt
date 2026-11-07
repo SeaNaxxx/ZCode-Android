@@ -396,7 +396,95 @@ object Provisioner {
 
     // ------------------------------------------------------------------ HTTP
 
+    /**
+     * REVISED §5 Phase 8 / §10: server-side URL requests validate the host
+     * before any socket opens. Only http/https are accepted, and loopback,
+     * link-local, private (RFC 1918), CGNAT, documentation and other
+     * reserved ranges are rejected — including literal IPs AND hostnames
+     * that resolve from DNS to those ranges (SSRF via redirect or a
+     * resolver-controlled name cannot bypass the check). The ZCode product
+     * surface (`ws://127.0.0.1:3030`) is the exception: the local runtime
+     * contract is loopback-only by design and is NOT fetched through this
+     * helper (downloads only ever target the fixed upstream hosts below).
+     *
+     * Hostnames are resolved and EVERY address must be public. A name that
+     * resolves to a non-public address — or that cannot be resolved at all
+     * — fails closed.
+     */
+    private val ALLOWED_DOWNLOAD_HOSTS = setOf("nodejs.org", "cdimage.ubuntu.com")
+
+    /** True if [host] resolves exclusively to public addresses. */
+    internal fun isSafeHttpHost(host: String): Boolean {
+        val h = host.trim().trim('[', ']').lowercase()
+        if (h.isEmpty()) return false
+        if (h == "localhost" || h.endsWith(".localhost")) return false
+        val addr = runCatching { java.net.InetAddress.getAllByName(h) }.getOrNull() ?: return false
+        if (addr.isEmpty()) return false
+        return addr.all { it.isPublicNetworkAddress() }
+    }
+
+    private fun java.net.InetAddress.isPublicNetworkAddress(): Boolean {
+        if (isAnyLocalAddress || isLoopbackAddress || isLinkLocalAddress || isSiteLocalAddress) return false
+        val octets = hostAddress?.split('.')?.mapNotNull { it.toIntOrNull() }
+        if (octets != null && octets.size == 4) {
+            val (a, b, c, d) = octets
+            if (a == 100 && b in 64..127) return false          // CGNAT 100.64/10
+            if (a == 192 && b == 0 && c == 0) return false      // 192.0.0.0/24
+            if (a == 192 && b == 0 && c == 2) return false      // TEST-NET-1
+            if (a == 198 && b == 51 && c == 100) return false   // TEST-NET-2
+            if (a == 203 && b == 0 && c == 113) return false    // TEST-NET-3
+            if (a == 198 && b == 18 && c in 0..15) return false // benchmarking 198.18/15
+            if (a == 240) return false                          // reserved 240/4
+            if (a == 0) return false                            // 0.0.0.0/8
+        }
+        // IPv6 (hostAddress contains ':', no IPv4 dotted quad matched):
+        // reject unique-local (fc00::/7), documentation (2001:db8::/32),
+        // multicast (ff00::/8), link-local handled above.
+        if (octets == null && hostAddress != null && hostAddress.contains(':')) {
+            val raw = hostAddress.lowercase()
+            if (raw.startsWith("fc") || raw.startsWith("fd")) return false
+            if (raw.startsWith("2001:db8:")) return false
+            if (raw.startsWith("ff")) return false
+            if (raw.startsWith("fe80:")) return false
+        }
+        return true
+    }
+
+    /**
+     * Validates [url] against the fixed download-host allowlist (the legacy
+     * proot mode fetches ONLY nodejs.org / cdimage.ubuntu.com today) AND
+     * the host-resolution safety rule above. Throws on any violation —
+     * the download fails closed rather than contacting the host.
+     *
+     * NOTE on scope: every call site in this class passes a hard-coded
+     * constant host, so this guard changes no behavior today. It exists so
+     * that if a URL ever becomes configurable (settings, agent guidance),
+     * the guard is already in front of `openConnection`.
+     */
+    internal fun requireSafeHttpUrl(url: String, allowLoopbackProductSocket: Boolean = false) {
+        // The product-socket exception is ws:// loopback ONLY — checked first
+        // so the download path below never treats it as an http scheme.
+        if (allowLoopbackProductSocket) {
+            val raw = runCatching { URL(url) }.getOrNull()
+            if (raw != null && raw.protocol == "ws" &&
+                raw.host in setOf("127.0.0.1", "localhost", "::1")
+            ) return
+        }
+        val u = URL(url)
+        if (u.protocol !in setOf("http", "https")) {
+            throw IOException("blocked non-http(s) URL scheme: ${u.protocol}")
+        }
+        val host = u.host
+        if (!isSafeHttpHost(host)) {
+            throw IOException("blocked unsafe URL host (SSRF guard): $host")
+        }
+        if (host !in ALLOWED_DOWNLOAD_HOSTS) {
+            throw IOException("blocked URL host not in download allowlist: $host")
+        }
+    }
+
     private fun openConnection(url: String): HttpURLConnection {
+        requireSafeHttpUrl(url)
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 20_000
         c.readTimeout = 60_000

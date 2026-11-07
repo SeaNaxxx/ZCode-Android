@@ -180,3 +180,54 @@ previous listener before re-subscribing (`taskListener?.dispose()`).
 - Phase 6 device validation: owner device run required (see
   DEVICE-VALIDATION.md). CI (x86_64 AVD) is supplementary evidence,
   never a substitute per §5 Phase 6.
+
+------------------------------------------------------------------------
+
+## 7. Phases 7–10 (implemented on this branch; CI/device evidence below)
+
+**Reliability (P7):** `ZcodeRpcClient` now keeps a persistent
+`consecutiveFailures` counter (reset on `[200] initialize`) and loops
+reconnect attempts with the existing bounded backoff (0.5 s..8 s) until
+READY instead of a single fixed attempt per failure; each attempt logs
+`reconnect attempt #n`. `call()` logs `rpc requestId=<id> <channel>.<method>`
+at dispatch and `rpc TIMEOUT requestId=<id>` on expiry — timeout value
+unchanged (20 s). `ConversationViewModel.send()` is serialized through a
+single `sendJob` (previous send cancelled first), closing the
+double-`createTask` race on fast double-submit. Applied event keys
+(`perm-req:`, `perm-resp:`, `complete:`, `error:`) are held in a bounded
+256-entry set and deduplicated; `respondPermission` removes `requestId`
+from `pendingPermissions` on first response, so a second tap cannot replay
+the approval. `onCleared` cancels send/collector jobs and disposes the
+listener. PTY verdict stays NEGATIVE — no terminal UI until a positive
+on-device `PTY-PROBE-VERDICT`.
+
+**Security (P8):** `Provisioner.requireSafeHttpUrl()` rejects
+non-http/https schemes, loopback, private, CGNAT, documentation and
+reserved addresses (literal IPs and resolved addresses — every resolved
+address must be public), and any host outside the fixed download allowlist
+(`nodejs.org`, `cdimage.ubuntu.com`). `ws://127.0.0.1:3030/ws` stays an
+explicit, narrow product-socket exception and never goes through the
+download path. `ProvisionerSsrfTest` covers the negative cases (loopback,
+RFC 1918, CGNAT, TEST-NET, link-local, non-http scheme, allowlist). HTTP/RPC/WS
+auth and second-app loopback isolation map to tokenless-loopback runtime
+behavior (§10 audit above) — a negative second-app test on a real device
+remains DEVICE evidence.
+
+**Release (P9):** signing reads `keystore.properties` / `ZCODE_RELEASE_STORE_*`
+env (debug fallback keeps CI green); the targetSdk 28 retention strategy
+(library-dir launch path gated on runNodeProbe evidence on the acceptance
+device) is documented at the `targetSdk = 28` declaration; Bionic + dist
+bundles remain sha256-verified with the sealed-archive builder audit
+zero-hardlink assertion; tampered bundles fail provisioning rather than
+being silently used. Update-over-install and clean-install remain DEVICE rows.
+
+**Coverage/accessibility (P10):** see FEATURE-MATRIX.md (supported / partial /
+unsupported rows with evidence). Controls carry content descriptions,
+touch targets ≥ 40 dp / 48 dp; the §4 AI-slop gate in §4.4 of this report
+persists. TalkBack, keyboard traversal, and largest font scale remain DEVICE
+rows (DEVICE-VALIDATION 17/20).
+
+**VQL targetSdk note:** `writeVql` emits the unsigned 32-bit reinterpretation
+of a signed int and the reader re-signs it — matching the pinned upstream
+`(n|0)` semantic (documented in `Vql.kt`); lengths/counts (non-negative
+upstream) are unaffected. No behavior change.

@@ -85,11 +85,23 @@ class ZcodeRpcClient(
     private val wantsConnection = AtomicBoolean(false)
     private var initialized = false
 
+    /**
+     * Consecutive connection failures since the last READY. Drives the
+     * bounded backoff; reset on initialize ([200]). The previous shape
+     * restarted the counter on every scheduleReconnect, so a persistently
+     * failing endpoint always reconnected at 0.5s with no backoff.
+     */
+    private var consecutiveFailures = 0
+
+    /** Task-send RPC watchdog: request id + in-flight channel.method. */
+    private val rpcWatchdog = java.util.concurrent.atomic.AtomicLong(0)
+
     private data class PendingCall(
         val channel: String,
         val method: String,
         val onComplete: (Result<Any?>) -> Unit,
         val deadlineMs: Long,
+        val requestId: Int,
     )
 
     private class ListenerEntry(
@@ -139,14 +151,29 @@ class ZcodeRpcClient(
         _conn.value = Conn.IDLE
         if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
-            var attempt = 0
             while (wantsConnection.get()) {
-                val backoff = (500L shl attempt.coerceAtMost(4)) // 0.5s..8s
+                val backoff = (500L shl consecutiveFailures.coerceAtMost(4)) // 0.5s..8s
+                android.util.Log.i(
+                    "ZcodeRpcClient",
+                    "reconnect attempt #${consecutiveFailures + 1} after ${backoff}ms ($reason)",
+                )
                 delay(backoff)
                 if (!wantsConnection.get()) break
-                attempt++
+                consecutiveFailures++
                 openSocket()
-                return@launch
+                // openSocket is async — watch for READY; if the socket
+                // fails, scheduleReconnect() (fresh reason) drives the loop
+                // again and this job is superseded by the active-check above.
+                // Poll briefly so a slow-but-successful connect exits here.
+                var waited = 0L
+                while (wantsConnection.get() && _conn.value != Conn.READY && waited < 10_000) {
+                    delay(250)
+                    waited += 250
+                    if (_conn.value == Conn.IDLE) break
+                }
+                if (_conn.value == Conn.READY) return@launch
+                if (_conn.value == Conn.IDLE) continue
+                // CONNECTING stall past 10s: retry as a fresh backoff step.
             }
         }
     }
@@ -265,6 +292,7 @@ class ZcodeRpcClient(
         when (type) {
             RESPONSE_INITIALIZE -> {
                 initialized = true
+                consecutiveFailures = 0
                 _conn.value = Conn.READY
                 // Events subscribed before READY are re-armed here so a
                 // reconnect restores subscriptions without UI churn.
@@ -350,6 +378,11 @@ class ZcodeRpcClient(
         Vql.serializeInto(payloadOut, if (arg == null) emptyList<Any?>() else listOf(arg))
         val wire = payloadOut.toByteArray()
 
+        rpcWatchdog.set(id)
+        android.util.Log.i(
+            "ZcodeRpcClient",
+            "rpc requestId=$id $channel.$method timeoutMs=$timeoutMs",
+        )
         val result = withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { cont ->
                 synchronized(pending) { pending[id] = PendingCall(channel, method, { r ->
@@ -357,14 +390,18 @@ class ZcodeRpcClient(
                         onSuccess = { cont.resume(CallCompleted(it)) },
                         onFailure = { cont.resumeWithException(it) },
                     )
-                }, System.currentTimeMillis() + timeoutMs) }
+                }, System.currentTimeMillis() + timeoutMs, id) }
                 sendFrame(wire)
             }
         }
         if (result == null) {
             // Timed out: drop the pending entry so a late response is ignored.
+            android.util.Log.w(
+                "ZcodeRpcClient",
+                "rpc TIMEOUT requestId=$id $channel.$method after ${timeoutMs}ms",
+            )
             synchronized(pending) { pending.remove(id) }
-            throw RpcError("RPC timeout: $channel.$method (${timeoutMs}ms)")
+            throw RpcError("RPC timeout: $channel.$method requestId=$id (${timeoutMs}ms)")
         }
         return (result as CallCompleted).value
     }

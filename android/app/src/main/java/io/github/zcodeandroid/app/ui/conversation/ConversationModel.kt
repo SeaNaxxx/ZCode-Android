@@ -79,6 +79,17 @@ class ConversationViewModel(
     private var api: ZcodeApi? = null
     private var taskListener: ZcodeRpcClient.Listener? = null
     private var collectorJob: Job? = null
+    private var sendJob: Job? = null
+
+    /**
+     * P5 duplicate-event prevention: ids of terminal/permission events already
+     * applied. A replayed frame (reconnect re-arm, re-delivery) carrying the
+     * same key is applied once. Bounded to the last 256 keys.
+     */
+    private val appliedKeys = LinkedHashSet<String>()
+
+    /** Remembered permission cards awaiting a user response, by requestId. */
+    private val pendingPermissions = mutableSetOf<String>()
 
     /** Restore path after process death: the screen saves this id. */
     var restoreTaskId: String? = null
@@ -135,6 +146,8 @@ class ConversationViewModel(
         val api = api ?: return
         taskListener?.dispose()
         collectorJob?.cancel()
+        appliedKeys.clear()
+        pendingPermissions.clear()
         _state.update { it.copy(selectedTaskId = taskId, timeline = emptyList(), running = false, sendError = null) }
         viewModelScope.launch(Dispatchers.IO) {
             // History first (honest restore), then live events.
@@ -184,6 +197,13 @@ class ConversationViewModel(
         }
     }
 
+    private fun rememberApplied(key: String): Boolean {
+        if (key in appliedKeys) return false
+        appliedKeys.add(key)
+        while (appliedKeys.size > 256) appliedKeys.remove(appliedKeys.first())
+        return true
+    }
+
     private fun addPermissionCard(rows: MutableList<TimelineItem>, p: Map<*, *>) {
         val requestId = p["requestId"] as? String ?: return
         val options = (p["options"] as? List<*>).orEmpty().mapNotNull { o ->
@@ -205,6 +225,7 @@ class ConversationViewModel(
         )
         rows.removeAll { it is TimelineItem.PermissionCard && it.requestId == requestId }
         rows.add(card)
+        pendingPermissions.add(requestId)
     }
 
     private fun replaceTimeline(block: (MutableList<TimelineItem>) -> Unit) {
@@ -279,20 +300,31 @@ class ConversationViewModel(
                     }
                 }
             }
-            "permission_request" -> replaceTimeline { addPermissionCard(it, map) }
+            "permission_request" -> {
+                val requestId = map["requestId"] as? String ?: return
+                if (!rememberApplied("perm-req:$requestId")) return
+                replaceTimeline { addPermissionCard(it, map) }
+            }
             "permission_response" -> {
                 val requestId = map["requestId"] as? String ?: return
+                if (!rememberApplied("perm-resp:$requestId")) return
+                pendingPermissions.remove(requestId)
                 replaceTimeline { rows ->
                     rows.removeAll { it is TimelineItem.PermissionCard && it.requestId == requestId }
                 }
             }
             "task_run_started" -> _state.update { it.copy(running = true) }
             "task_complete" -> {
+                val key = "complete:" + (map["taskId"] as? String ?: map["traceId"] as? String ?: "run") +
+                    ":" + (map["stopReason"] as? String ?: "")
+                if (!rememberApplied(key)) return
                 _state.update { it.copy(running = false) }
                 val reason = map["stopReason"] as? String ?: ""
                 replaceTimeline { it.add(TimelineItem.Notice("done${it.size}", "Completed ($reason)", false)) }
             }
             "task_error" -> {
+                val key = "error:" + (map["taskId"] as? String ?: "run") + ":" + (map["error"] as? String ?: "")
+                if (!rememberApplied(key)) return
                 _state.update { it.copy(running = false) }
                 val text = (map["error"] as? String) ?: "task error"
                 replaceTimeline { it.add(TimelineItem.Notice("err${it.size}", text, true)) }
@@ -316,7 +348,17 @@ class ConversationViewModel(
         }
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
-        viewModelScope.launch(Dispatchers.IO) {
+        // REVISED §5 Phase 7 (request deduplication, P5 cancel): serialize
+        // sends. The previous shape read `selectedTaskId == null` inside the
+        // IO coroutine, so two rapid sends could both pass the null check and
+        // both call createTask (double task). Cancelling any in-flight send
+        // first collapses them into one create path; a second send cancels
+        // the first and runs its own. (Rapid double-submit is still safely
+        // handled because each send re-reads `selectedTaskId` after any
+        // createTask it launches — the first createTask's id is visible to
+        // the second send instead of vanishing between the two checks.)
+        sendJob?.cancel()
+        sendJob = viewModelScope.launch(Dispatchers.IO) {
             withContext(Dispatchers.Main) {
                 _state.update { it.copy(sendError = null) }
             }
@@ -383,6 +425,9 @@ class ConversationViewModel(
     fun respondPermission(requestId: String, option: PermOption) {
         val api = api ?: return
         val taskId = _state.value.selectedTaskId ?: return
+        // Exactly-once delivery (P5 criterion): a second response for the
+        // same requestId is a no-op — the server cannot replay the approval.
+        if (!pendingPermissions.remove(requestId)) return
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { api.respondPermission(workspacePath, taskId, requestId, option.optionId, option.decision) }
                 .onFailure { e ->
@@ -395,6 +440,8 @@ class ConversationViewModel(
     fun dismissSendError() = _state.update { it.copy(sendError = null) }
 
     override fun onCleared() {
+        sendJob?.cancel()
+        collectorJob?.cancel()
         taskListener?.dispose()
         rpc?.close()
     }

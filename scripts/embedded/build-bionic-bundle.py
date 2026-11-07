@@ -68,6 +68,7 @@ SEEDS = [
     "nodejs-lts",
     "git",
     "bash",
+    "curl",
     "ca-certificates",
     "termux-exec",
     "libandroid-support",

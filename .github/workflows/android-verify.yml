@@ -789,6 +789,8 @@ jobs:
             echo "--- run-as wrapper: git + bash ---"
             adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh git --version
             adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh bash --version | head -1
+            echo "--- run-as wrapper: curl from Bionic prefix ---"
+            adb shell run-as '"$PKG"' sh /data/local/tmp/verify-run.sh curl --version | head -1
           '
 
       - name: openssl-offline | OpenSSL init + verified TLS handshake, still offline

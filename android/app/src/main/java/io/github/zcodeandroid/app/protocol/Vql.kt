@@ -22,6 +22,17 @@ import java.io.ByteArrayOutputStream
  * VQL: 7 data bits per byte, little-endian groups, MSB = continuation
  * (0 -> [0x00], 128 -> [0x80, 0x01]).
  *
+ * NEGATIVE INTEGERS (TAG_INT) — signed 32-bit reinterpretation:
+ * `writeVql` shifts with `ushr` and emits the unsigned 32-bit
+ * representation of [value]; the reader accumulates the same bits and
+ * reinterprets the accumulated Int sign. This matches the pinned upstream
+ * TypeScript: JS `writeVQL` stores `value | 0` bit patterns and `readVQL`
+ * returns the re-signed int, so e.g. -1 encodes to [0xFF... ] and decodes
+ * back to -1, and lengths/counts (always non-negative upstream) are
+ * unaffected. Upstream `(n|0) === n` already rejects non-int32 values,
+ * routing them to the JSON fallback — negative int32 values were never
+ * routed away, so the signed path is the documented upstream semantic.
+ *
  * Fidelity notes (mirroring the TypeScript exactly):
  *  - Only the TOP-LEVEL value gets a tag; values nested inside an Object are
  *    pure JSON (numbers/booleans stay JSON there).
