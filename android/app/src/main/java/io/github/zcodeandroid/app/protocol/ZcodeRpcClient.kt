@@ -378,7 +378,7 @@ class ZcodeRpcClient(
         Vql.serializeInto(payloadOut, if (arg == null) emptyList<Any?>() else listOf(arg))
         val wire = payloadOut.toByteArray()
 
-        rpcWatchdog.set(id)
+        rpcWatchdog.set(id.toLong())
         android.util.Log.i(
             "ZcodeRpcClient",
             "rpc requestId=$id $channel.$method timeoutMs=$timeoutMs",

@@ -705,3 +705,16 @@ remote-project-required -> §11.6 FK deferred persistence -> §11.7
 void-ack timeout misread -> §11.8 EventListen single-arg body ->
 §11.9 coexistence pacing. No bypasses, no timeout changes; every fix
 mirrors a pinned-upstream contract.
+
+### 11.11 External agent patch landed — one compile fix (run 42329950547)
+
+The crouton-alpha agent's pending patch (P5 send dedup/cancel, P7 reconnect
+backoff + rpc logging, P8 `Provisioner.requireSafeHttpUrl` SSRF guard +
+`ProvisionerSsrfTest`, P10 `FEATURE-MATRIX.md`, `WEBVIEW-DECISION.md` §2.1
+retention list, curl seed + run-as curl probe) could not be pushed by its
+author (hosting policy); it was applied verbatim on top of 139a902 and
+pushed as 36cf3d6. Run 42329950587 failed at `:app:compileDebugKotlin`:
+`ZcodeRpcClient.kt:381 AtomicLong.set(Int)` — the patch's new write-only
+watchdog field; fixed with `id.toLong()` (no behavior change). All other
+patch hunks compiled; unit tests were not reached. Evidence: job
+128273952290 log (`e: ...:381:25 Argument type mismatch`).
