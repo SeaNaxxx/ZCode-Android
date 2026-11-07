@@ -9,15 +9,15 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 
 /**
- * P1 theme (REVISED architecture §5 Phase 1). Full Material 3 color
- * schemes built from the ZCode tokens; plus a small semantic-status
- * extension (running/completed/failed/approval) and a spacing scale —
- * the only sanctioned spacing values, so screens stay consistent by
- * construction rather than by discipline.
+ * Theme (REVISED architecture §5 Phase 1 + Phase 2 UI brief). Full Material 3
+ * color schemes built from the ZCode tokens; plus semantic-status extension
+ * (running/completed/failed/approval), a terminal-surface extension (tool
+ * cards read as product content in both themes), the spacing scale and the
+ * corner-radii scale — the only sanctioned values, so screens stay consistent
+ * by construction rather than by discipline. Spacing/radii tokens live in
+ * Dimens.kt (same package).
  */
 
 @Immutable
@@ -28,25 +28,28 @@ data class ZcodeStatusColors(
     val approvalRequired: androidx.compose.ui.graphics.Color,
 )
 
+/** Terminal-style surface for tool cards — dark in both themes (Color.kt). */
 @Immutable
-data class ZcodeSpacing(
-    val xs: Dp = 4.dp,
-    val sm: Dp = 8.dp,
-    val md: Dp = 12.dp,
-    val lg: Dp = 16.dp,
-    val xl: Dp = 24.dp,
+data class ZcodeTerminalColors(
+    val background: androidx.compose.ui.graphics.Color,
+    val onBackground: androidx.compose.ui.graphics.Color,
+    val accent: androidx.compose.ui.graphics.Color,
 )
 
 val LocalZcodeStatusColors = staticCompositionLocalOf {
     ZcodeStatusColors(Amber60, StatusOkLight, StatusFailLight, StatusPendingLight)
 }
 val LocalZcodeSpacing = staticCompositionLocalOf { ZcodeSpacing() }
+val LocalZcodeRadii = staticCompositionLocalOf { ZcodeRadii() }
+val LocalZcodeTerminal = staticCompositionLocalOf {
+    ZcodeTerminalColors(TerminalLight, TerminalOnLight, TerminalAccentLight)
+}
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Amber80,
-    onPrimary = Color(0xFF2B1E02),
-    primaryContainer = AmberContainerDark,
-    onPrimaryContainer = OnAmberContainerDark,
+    primary = Blue80,
+    onPrimary = Color(0xFF0A2547),
+    primaryContainer = BlueContainerDark,
+    onPrimaryContainer = OnBlueContainerDark,
     secondary = OnVariantDark,
     onSecondary = PaperDark,
     secondaryContainer = SurfaceVariantDark,
@@ -70,10 +73,10 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Amber60,
+    primary = Blue60,
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = AmberContainerLight,
-    onPrimaryContainer = OnAmberContainerLight,
+    primaryContainer = BlueContainerLight,
+    onPrimaryContainer = OnBlueContainerLight,
     secondary = OnVariantLight,
     onSecondary = PaperLight,
     secondaryContainer = SurfaceVariantLight,
@@ -107,9 +110,16 @@ fun ZcodeTheme(
     } else {
         ZcodeStatusColors(StatusRunLight, StatusOkLight, StatusFailLight, StatusPendingLight)
     }
+    val terminal = if (darkTheme) {
+        ZcodeTerminalColors(TerminalDark, TerminalOnDark, TerminalAccentDark)
+    } else {
+        ZcodeTerminalColors(TerminalLight, TerminalOnLight, TerminalAccentLight)
+    }
     CompositionLocalProvider(
         LocalZcodeStatusColors provides statusColors,
         LocalZcodeSpacing provides ZcodeSpacing(),
+        LocalZcodeRadii provides ZcodeRadii(),
+        LocalZcodeTerminal provides terminal,
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
@@ -126,6 +136,10 @@ object ZcodeThemeValues {
         @Composable get() = LocalZcodeStatusColors.current
     val spacing: ZcodeSpacing
         @Composable get() = LocalZcodeSpacing.current
+    val radii: ZcodeRadii
+        @Composable get() = LocalZcodeRadii.current
+    val terminal: ZcodeTerminalColors
+        @Composable get() = LocalZcodeTerminal.current
 }
 
 /** App theme mode (§7 owner: Android UI / persistent settings). */

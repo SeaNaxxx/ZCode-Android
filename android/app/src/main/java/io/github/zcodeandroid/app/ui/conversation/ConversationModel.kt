@@ -60,6 +60,23 @@ class ConversationViewModel(
     data class PermOption(val optionId: String, val name: String, val decision: String)
     data class TaskRow(val taskId: String, val title: String, val updatedAt: Long)
 
+    /** One selectable entry of the task's model config option (pinned shape). */
+    data class ModelOptionUi(val value: String, val name: String, val providerId: String?)
+
+    /**
+     * Model sheet projection (FEATURE-MATRIX "Model / mode selection: Partial"
+     * — the picker surface). Options come from getTaskConfigOptions filtered
+     * to category=="model" && type=="select"; setModel is sent as the
+     * official ModelSelection {providerId, modelId} built from the option's
+     * own modelProviderId. No option data -> an honest empty sheet.
+     */
+    data class ModelSheetUi(
+        val loading: Boolean,
+        val options: List<ModelOptionUi>,
+        val currentModelId: String?,
+        val unavailableReason: String? = null,
+    )
+
     data class UiState(
         val tasks: List<TaskRow> = emptyList(),
         val selectedTaskId: String? = null,
@@ -68,6 +85,9 @@ class ConversationViewModel(
         val conn: Conn = Conn.CONNECTING,
         val sendError: String? = null,
         val listError: String? = null,
+        val modelName: String? = null,
+        val modelSheet: ModelSheetUi? = null,
+        val modelError: String? = null,
     ) {
         val hasSelectedTask: Boolean get() = selectedTaskId != null
     }
@@ -94,6 +114,13 @@ class ConversationViewModel(
     /** Restore path after process death: the screen saves this id. */
     var restoreTaskId: String? = null
 
+    /**
+     * Start continuity: opening a specific card (or process-death restore)
+     * passes restoreTaskId. The Home FAB opens a fresh draft — no task is
+     * auto-opened, the composer starts empty and the first send creates it.
+     */
+    var openMostRecentOnStart: Boolean = true
+
     fun start() {
         if (rpc != null) return
         val client = ZcodeRpcClient("ws://127.0.0.1:3030/ws", viewModelScope)
@@ -113,7 +140,7 @@ class ConversationViewModel(
             }
         }
         client.connect()
-        refreshTasks(openFirst = restoreTaskId == null)
+        refreshTasks(openFirst = openMostRecentOnStart && restoreTaskId == null)
         restoreTaskId?.let { openTask(it) }
     }
 
@@ -148,18 +175,39 @@ class ConversationViewModel(
         collectorJob?.cancel()
         appliedKeys.clear()
         pendingPermissions.clear()
-        _state.update { it.copy(selectedTaskId = taskId, timeline = emptyList(), running = false, sendError = null) }
+        _state.update {
+            it.copy(
+                selectedTaskId = taskId,
+                timeline = emptyList(),
+                running = false,
+                sendError = null,
+                modelName = null,
+                modelSheet = null,
+                modelError = null,
+            )
+        }
         viewModelScope.launch(Dispatchers.IO) {
             // History first (honest restore), then live events.
             runCatching { api.getTaskSnapshot(workspacePath, taskId) }
                 .onSuccess { snap -> renderSnapshot(taskId, snap) }
                 .onFailure { e -> RuntimeBus.append("snapshot failed: ${e.message}") }
+            loadModelName(taskId)
             val listener = api.taskEvents(workspacePath, taskId)
             taskListener = listener
             collectorJob = viewModelScope.launch(Dispatchers.IO) {
                 listener.flow.collect { ev -> handleStreamEvent(ev) }
             }
         }
+    }
+
+    /** Current model for the top bar (getTaskModelSelection.modelId). */
+    private suspend fun loadModelName(taskId: String) {
+        runCatching { api!!.getTaskModelSelection(taskId) }
+            .onSuccess { sel ->
+                val id = (sel?.get("modelId") as? String)?.takeIf { it.isNotBlank() }
+                _state.update { if (it.selectedTaskId == taskId) it.copy(modelName = id) else it }
+            }
+            .onFailure { RuntimeBus.append("getTaskModelSelection failed: ${it.message}") }
     }
 
     private fun renderSnapshot(taskId: String, snap: Map<String, Any?>) {
@@ -438,6 +486,108 @@ class ConversationViewModel(
     }
 
     fun dismissSendError() = _state.update { it.copy(sendError = null) }
+
+    // ------------------------------------------------------------------ model
+
+    fun openModelSheet() {
+        val api = api ?: return
+        val taskId = _state.value.selectedTaskId ?: run {
+            _state.update {
+                it.copy(
+                    modelSheet = ModelSheetUi(
+                        loading = false,
+                        options = emptyList(),
+                        currentModelId = null,
+                        unavailableReason = "Open a conversation first — the model is chosen per task.",
+                    ),
+                )
+            }
+            return
+        }
+        _state.update { it.copy(modelSheet = ModelSheetUi(loading = true, options = emptyList(), currentModelId = it.modelName)) }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { api.getTaskConfigOptions(taskId) }
+                .onSuccess { options ->
+                    val modelOption = options.firstOrNull {
+                        (it["category"] as? String) == "model" && (it["type"] as? String) == "select"
+                    }
+                    val entries = (modelOption?.get("options") as? List<*>).orEmpty().mapNotNull { v ->
+                        val vm = v as? Map<*, *> ?: return@mapNotNull null
+                        val value = vm["value"] as? String ?: return@mapNotNull null
+                        ModelOptionUi(
+                            value = value,
+                            name = (vm["name"] as? String) ?: value,
+                            providerId = vm["modelProviderId"] as? String,
+                        )
+                    }
+                    val current = _state.value.modelName
+                        ?: (modelOption?.get("currentValue") as? String)
+                    _state.update {
+                        it.copy(
+                            modelSheet = ModelSheetUi(
+                                loading = false,
+                                options = entries,
+                                currentModelId = current,
+                                unavailableReason = if (entries.isEmpty()) {
+                                    "This runtime exposes no selectable models for this task."
+                                } else null,
+                            ),
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    RuntimeBus.append("getTaskConfigOptions failed: ${e.message}")
+                    _state.update {
+                        it.copy(
+                            modelSheet = ModelSheetUi(
+                                loading = false,
+                                options = emptyList(),
+                                currentModelId = _state.value.modelName,
+                                unavailableReason = "Model options unavailable: ${e.message}",
+                            ),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun closeModelSheet() = _state.update { it.copy(modelSheet = null, modelError = null) }
+
+    fun selectModel(option: ModelOptionUi) {
+        val api = api ?: return
+        val taskId = _state.value.selectedTaskId ?: return
+        val providerId = option.providerId
+        if (providerId.isNullOrBlank()) {
+            // ModelSelection REQUIRES a providerId (pinned schema, min 1);
+            // without one the switch cannot be sent honestly.
+            _state.update {
+                it.copy(modelError = "This runtime did not provide a provider for \"${option.name}\" — the switch cannot be sent.")
+            }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                api.setModel(
+                    taskId,
+                    mapOf("providerId" to providerId, "modelId" to option.value),
+                )
+            }
+                .onSuccess {
+                    RuntimeBus.append("setModel -> ${option.value}")
+                    _state.update {
+                        it.copy(
+                            modelName = option.value,
+                            modelSheet = null,
+                            modelError = null,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    RuntimeBus.append("setModel failed: ${e.message}")
+                    _state.update { it.copy(modelError = e.message ?: "setModel failed") }
+                }
+        }
+    }
 
     override fun onCleared() {
         sendJob?.cancel()

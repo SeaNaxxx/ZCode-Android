@@ -15,7 +15,7 @@ presented as working.
 | File editor / diff presentation | Unsupported | — | No editor integration at this pin; not exposed in UI |
 | Terminal (PTY) | Unsupported (gated) | PTY-PROBE-VERDICT: NEGATIVE (run 42103274954) | Blocked until positive on-device PTY evidence; separate from Agent Bash |
 | Sign-in / OAuth (device flow + browser handoff) | Partial | `oauth` channel wired at API level; `zcode://oauth` deep link registered | Native sign-in UI not yet migrated; marked unavailable in the native shell, no fake login |
-| Model / mode selection | Partial | API-level `setModel`/`setMode` wired | Picker UI not yet surfaced in conversation |
+| Model / mode selection | Partial | `setModel`/`setMode` wired AND surfaced: top-bar model button opens the config-option picker (per-task `getTaskConfigOptions` category=model), sends official `ModelSelection {providerId, modelId}`; no provider id → honest refusal (UI brief 2026-11) | Mode picker + reasoning levels not yet surfaced |
 | Message actions (copy/share), voice, image upload | Unsupported | — | Not implemented; not claimed |
 | Settings / Providers | Partial | Theme (system/light/dark) persisted; provider config is runtime-owned (mock seed) | Full settings surface not migrated |
 | Memory / MCP / Plugins / Skills / Subagents | Unsupported (unmigrated) | Extension inventory UNKNOWN (audit §2) | No on-device inventory + load test yet; not exposed as native features |

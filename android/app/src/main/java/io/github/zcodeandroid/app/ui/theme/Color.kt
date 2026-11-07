@@ -21,6 +21,28 @@ val OnAmberContainerLight = Color(0xFF713F12)
 val AmberContainerDark = Color(0xFF3B2E06)
 val OnAmberContainerDark = Color(0xFFFDE68A)
 
+// ---------------------------------------------------------------- calm blue (primary)
+// REVISED Phase 2 UI direction (owner brief 2026-11): calm blue primary over
+// quiet stone neutrals. Blue carries the primary actions and the user
+// message bubble; amber remains only as the "running" status semantic.
+val Blue60 = Color(0xFF2E6BE6)       // light theme primary (≈4.8:1 on white)
+val Blue80 = Color(0xFF8AB4F8)       // dark theme primary
+val BlueContainerLight = Color(0xFFD9E6FD)
+val OnBlueContainerLight = Color(0xFF0E2E63)
+val BlueContainerDark = Color(0xFF1D3A66)
+val OnBlueContainerDark = Color(0xFFC9DDFC)
+
+// ---------------------------------------------------------------- terminal (tool output)
+// The tool card keeps a terminal surface in BOTH themes — it is product
+// content (code/commands), not chrome. Dark-on-dark stays distinguishable
+// from the theme surface by a hairline outline (see ToolCard).
+val TerminalLight = Color(0xFF1C1917)
+val TerminalOnLight = Color(0xFFE7E5E4)
+val TerminalAccentLight = Color(0xFF7DD3FC)
+val TerminalDark = Color(0xFF0C0A09)
+val TerminalOnDark = Color(0xFFD6D3D1)
+val TerminalAccentDark = Color(0xFF7DD3FC)
+
 // ---------------------------------------------------------------- teal (tool activity)
 val Teal40 = Color(0xFF0F766E)
 val Teal70 = Color(0xFF2DD4BF)

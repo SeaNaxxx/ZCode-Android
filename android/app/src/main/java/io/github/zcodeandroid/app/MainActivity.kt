@@ -30,8 +30,10 @@ import io.github.zcodeandroid.app.local.Provisioner
 import io.github.zcodeandroid.app.local.RuntimeBus
 import io.github.zcodeandroid.app.local.RuntimeState
 import io.github.zcodeandroid.app.ui.LocalApp
-import io.github.zcodeandroid.app.ui.conversation.ConversationScreen
+import io.github.zcodeandroid.app.ui.conversation.ChatScreen
 import io.github.zcodeandroid.app.ui.conversation.ConversationViewModel
+import io.github.zcodeandroid.app.ui.home.HomeScreen
+import io.github.zcodeandroid.app.ui.home.HomeViewModel
 import io.github.zcodeandroid.app.ui.workspace.WorkspaceScreen
 import io.github.zcodeandroid.app.ui.workspace.WorkspaceViewModel
 import io.github.zcodeandroid.app.ui.theme.THEME_DARK
@@ -42,22 +44,31 @@ import io.github.zcodeandroid.app.ui.theme.ZcodeTheme
 /**
  * Entry point — NATIVE-ONLY product surface (owner decision 2026-11-05,
  * ANDROID-UI-ARCHITECTURE-REVISED.md): install -> open -> silent
- * provisioning -> the Compose conversation screen backed by the local
- * ZCode runtime over the WS RPC contract.
+ * provisioning -> Home (the task dashboard) -> Chat over the local ZCode
+ * runtime's WS RPC contract. Route + Screen pattern (owner UI brief):
+ * a tiny state-driven router, no navigation dependency — the offline
+ * build contract stays intact.
  *
- * The WebView is no longer a product surface (§2/§5 Phase 5); the local
- * server remains an internal service. The diagnostics overlay (runtime
- * log, workspace file import, backup/restore, app theme) is reached from
- * the conversation screen's overflow (⋮) menu — see LocalApp.
+ * The WebView is not a product surface (§2/§5 Phase 5); the local server
+ * remains an internal service. Diagnostics (runtime log, workspace file
+ * import, backup/restore, app theme) are reached from Home/Chat overflow
+ * menus — see LocalApp.
  *
  * Permissions (§9 just-in-time): no storage permission is requested at
  * startup — runtime provisioning is app-private; workspace import uses
- * the SAF document picker from the diagnostics overlay.
+ * the SAF document picker.
  */
+
+/** Minimal route table (owner brief: Route + Screen pattern). */
+private sealed interface Route {
+    data object Home : Route
+    data class Chat(val taskId: String?, val openMostRecent: Boolean) : Route
+    data class Workspace(val returnTo: Route) : Route
+    data class Diagnostics(val openBackup: Boolean, val returnTo: Route) : Route
+}
+
 class MainActivity : ComponentActivity() {
-    private var showDiagnostics by mutableStateOf(false)
-    private var showWorkspace by mutableStateOf(false)
-    private var diagnosticsOpenBackup by mutableStateOf(false)
+    private var route by mutableStateOf<Route>(Route.Home)
     private var themeMode by mutableStateOf(THEME_SYSTEM)
 
     private val prefs by lazy { getSharedPreferences("zcode_native", Context.MODE_PRIVATE) }
@@ -67,14 +78,11 @@ class MainActivity : ComponentActivity() {
      * pins targetSdk to 28 (Android 10+ blocks exec() from app-writable
      * storage, so the embedded Bionic node could not run otherwise) — and
      * apps targeting pre-Q do not receive the system night mode in their
-     * Configuration: on a dark phone this app (and the WebView's
-     * prefers-color-scheme, which the official ZCode web UI follows) stayed
-     * light. Owner report 2026-10-31: light UI on a dark phone, no dark
-     * theme. Fix: read the real system night mode from UiModeManager (a
-     * system service, unaffected by the targetSdk legacy behavior) and
-     * qualify the base context with UI_MODE_NIGHT_YES when the system is
-     * dark. Compose then picks the dark scheme, values-night themes apply,
-     * and the WebView reports prefers-color-scheme: dark.
+     * Configuration: on a dark phone this app stayed light. Fix: read the
+     * real system night mode from UiModeManager (a system service,
+     * unaffected by the targetSdk legacy behavior) and qualify the base
+     * context with UI_MODE_NIGHT_YES when the system is dark. Compose then
+     * picks the dark scheme and values-night themes apply.
      */
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(applySystemNightMode(newBase))
@@ -95,11 +103,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // failure-3 A/B instrument (emulator evidence 2026-10-28: the WebView's
-        // viewport-unit chain collapses to 0 under edge-to-edge — the suspected
-        // trigger is the edge-to-edge <-> WebView insets interaction). The
+        // failure-3 A/B instrument (emulator evidence 2026-10-28): the
         // marker file DISABLES edge-to-edge for controlled CI experiments;
-        // default behavior is unchanged. Diagnostic hook, not a product switch.
+        // default behavior is unchanged. Diagnostic hook, not a switch.
         val edgeToEdgeDisabledByMarker = runCatching {
             java.io.File(filesDir, "config-edge-to-edge-off").isFile
         }.getOrDefault(false)
@@ -114,9 +120,18 @@ class MainActivity : ComponentActivity() {
         themeMode = prefs.getInt(KEY_THEME_MODE, THEME_SYSTEM)
 
         if (savedInstanceState != null) {
-            showDiagnostics = savedInstanceState.getBoolean(KEY_SHOW_DIAGNOSTICS, false)
-            showWorkspace = savedInstanceState.getBoolean(KEY_SHOW_WORKSPACE, false)
-            diagnosticsOpenBackup = savedInstanceState.getBoolean(KEY_DIAGNOSTICS_BACKUP, false)
+            route = when (savedInstanceState.getString(KEY_ROUTE, KEY_ROUTE_HOME)) {
+                KEY_ROUTE_CHAT -> Route.Chat(
+                    savedInstanceState.getString(KEY_ROUTE_TASK),
+                    savedInstanceState.getBoolean(KEY_ROUTE_OPEN_RECENT, true),
+                )
+                KEY_ROUTE_WORKSPACE -> Route.Workspace(Route.Home)
+                KEY_ROUTE_DIAGNOSTICS -> Route.Diagnostics(
+                    savedInstanceState.getBoolean(KEY_ROUTE_DIAG_BACKUP, false),
+                    Route.Home,
+                )
+                else -> Route.Home
+            }
         }
 
         setContent {
@@ -156,33 +171,19 @@ class MainActivity : ComponentActivity() {
                 },
             ) {
                 when (val running = runtimeState) {
-                    is RuntimeState.Running ->
-                        if (showDiagnostics) {
-                            LocalApp(
-                                onBackToWeb = { showDiagnostics = false },
-                                openBackupSection = diagnosticsOpenBackup,
-                                themeMode = themeMode,
-                                onSetThemeMode = { value ->
-                                    themeMode = value
-                                    prefs.edit().putInt(KEY_THEME_MODE, value).apply()
-                                },
+                    is RuntimeState.Running -> when (val r = route) {
+                        is Route.Home -> {
+                            val vm: HomeViewModel = viewModel(
+                                factory = HomeViewModel.factory(this@MainActivity),
                             )
-                        } else if (showWorkspace) {
-                            val vm: WorkspaceViewModel = viewModel(
-                                factory = WorkspaceViewModel.factory(this@MainActivity),
-                            )
-                            WorkspaceScreen(vm = vm, onBack = { showWorkspace = false })
-                        } else {
-                            val vm: ConversationViewModel = viewModel(
-                                factory = ConversationViewModel.factory(this@MainActivity),
-                            )
-                            ConversationScreen(
+                            HomeScreen(
                                 vm = vm,
+                                onOpenTask = { taskId -> route = Route.Chat(taskId, false) },
+                                onNewChat = { route = Route.Chat(null, false) },
                                 onOpenDiagnostics = {
-                                    diagnosticsOpenBackup = false
-                                    showDiagnostics = true
+                                    route = Route.Diagnostics(false, Route.Home)
                                 },
-                                onOpenWorkspace = { showWorkspace = true },
+                                onOpenWorkspace = { route = Route.Workspace(Route.Home) },
                                 themeMode = themeMode,
                                 onSetThemeMode = { value ->
                                     themeMode = value
@@ -190,6 +191,44 @@ class MainActivity : ComponentActivity() {
                                 },
                             )
                         }
+                        is Route.Chat -> {
+                            val vm: ConversationViewModel = viewModel(
+                                factory = ConversationViewModel.factory(this@MainActivity),
+                            )
+                            ChatScreen(
+                                vm = vm,
+                                initialTaskId = r.taskId,
+                                openMostRecent = r.openMostRecent,
+                                onBack = { route = Route.Home },
+                                onOpenDiagnostics = {
+                                    route = Route.Diagnostics(false, r)
+                                },
+                                onOpenWorkspace = { route = Route.Workspace(r) },
+                                themeMode = themeMode,
+                                onSetThemeMode = { value ->
+                                    themeMode = value
+                                    prefs.edit().putInt(KEY_THEME_MODE, value).apply()
+                                },
+                            )
+                        }
+                        is Route.Workspace -> {
+                            val vm: WorkspaceViewModel = viewModel(
+                                factory = WorkspaceViewModel.factory(this@MainActivity),
+                            )
+                            WorkspaceScreen(vm = vm, onBack = { route = r.returnTo })
+                        }
+                        is Route.Diagnostics -> {
+                            LocalApp(
+                                onBackToWeb = { route = r.returnTo },
+                                openBackupSection = r.openBackup,
+                                themeMode = themeMode,
+                                onSetThemeMode = { value ->
+                                    themeMode = value
+                                    prefs.edit().putInt(KEY_THEME_MODE, value).apply()
+                                },
+                            )
+                        }
+                    }
                     is RuntimeState.Failed -> Column(
                         modifier = Modifier.fillMaxSize().padding(24.dp),
                         verticalArrangement = Arrangement.Center,
@@ -227,9 +266,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        outState.putBoolean(KEY_SHOW_DIAGNOSTICS, showDiagnostics)
-        outState.putBoolean(KEY_SHOW_WORKSPACE, showWorkspace)
-        outState.putBoolean(KEY_DIAGNOSTICS_BACKUP, diagnosticsOpenBackup)
+        when (val r = route) {
+            is Route.Chat -> {
+                outState.putString(KEY_ROUTE, KEY_ROUTE_CHAT)
+                outState.putString(KEY_ROUTE_TASK, r.taskId)
+                outState.putBoolean(KEY_ROUTE_OPEN_RECENT, r.openMostRecent)
+            }
+            is Route.Workspace -> outState.putString(KEY_ROUTE, KEY_ROUTE_WORKSPACE)
+            is Route.Diagnostics -> {
+                outState.putString(KEY_ROUTE, KEY_ROUTE_DIAGNOSTICS)
+                outState.putBoolean(KEY_ROUTE_DIAG_BACKUP, r.openBackup)
+            }
+            Route.Home -> outState.putString(KEY_ROUTE, KEY_ROUTE_HOME)
+        }
     }
 
     override fun onDestroy() {
@@ -242,9 +291,14 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        private const val KEY_SHOW_DIAGNOSTICS = "showDiagnostics"
-        private const val KEY_SHOW_WORKSPACE = "showWorkspace"
-        private const val KEY_DIAGNOSTICS_BACKUP = "diagnosticsOpenBackup"
+        private const val KEY_ROUTE = "route"
+        private const val KEY_ROUTE_HOME = "home"
+        private const val KEY_ROUTE_CHAT = "chat"
+        private const val KEY_ROUTE_WORKSPACE = "workspace"
+        private const val KEY_ROUTE_DIAGNOSTICS = "diagnostics"
+        private const val KEY_ROUTE_TASK = "routeTaskId"
+        private const val KEY_ROUTE_OPEN_RECENT = "routeOpenMostRecent"
+        private const val KEY_ROUTE_DIAG_BACKUP = "routeDiagBackup"
         private const val KEY_THEME_MODE = "theme_mode"
     }
 }

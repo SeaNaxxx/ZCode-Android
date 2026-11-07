@@ -187,3 +187,35 @@ fun MetadataRow(
         )
     }
 }
+
+/**
+ * Status badge (owner UI brief: Idle gray / Running / Completed). A quiet
+ * chip — status dot plus a small label on a surfaceVariant surface. The
+ * caller supplies the semantic color from the theme's status tokens; the
+ * badge never invents a state the runtime did not report.
+ */
+@Composable
+fun StatusBadge(
+    statusColor: Color,
+    label: String,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        shape = MaterialTheme.shapes.small,
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier.padding(
+                horizontal = ZcodeThemeValues.spacing.sm,
+                vertical = ZcodeThemeValues.spacing.xs,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(ZcodeThemeValues.spacing.xs),
+        ) {
+            StatusDot(color = statusColor, contentDescription = label)
+            Text(label, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
