@@ -88,7 +88,9 @@ private val BubbleMaxWidth = 340.dp
 
 @Composable
 private fun BubbleRow(
-    alignment: Alignment.Horizontal,
+    // Box(contentAlignment=…) takes the 2D Alignment; callers pass
+    // CenterEnd/CenterStart. Horizontal singletons would not satisfy Box.
+    alignment: Alignment,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
