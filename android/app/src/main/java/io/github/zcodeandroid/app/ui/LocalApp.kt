@@ -24,7 +24,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -58,25 +57,18 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** App-theme selector values — mirror MainActivity's persisted preference. */
-private const val THEME_SYSTEM = 0
-private const val THEME_LIGHT = 1
-private const val THEME_DARK = 2
-
 /**
  * Diagnostics overlay (unified product surface, owner decision 2026-11-04).
  *
- * The official ZCode web UI IS the product; this screen is the honest
- * escape hatch reached from the web UI's overflow (⋮) menu: runtime log,
- * workspace file import, backup/restore, app theme, and the diagnostics
- * export. No simulated states, no fake buttons.
+ * Reached from Home/Chat overflow (⋮) menus: runtime log, workspace file
+ * import, backup/restore, and the diagnostics export. Appearance lives in
+ * Settings (single source); this screen stays diagnostics-only. No
+ * simulated states, no fake buttons.
  */
 @Composable
 fun LocalApp(
     onBackToWeb: () -> Unit,
     openBackupSection: Boolean,
-    themeMode: Int,
-    onSetThemeMode: (Int) -> Unit,
 ) {
     val context = LocalContext.current
     val state by RuntimeBus.state.collectAsState()
@@ -167,7 +159,7 @@ fun LocalApp(
         Text(
             "The native conversation UI is the product (Native-only decision " +
                 "2026-11-05). This overlay holds the runtime log, workspace " +
-                "imports, backup/restore, and the app theme.",
+                "imports, backup/restore, and the diagnostics export.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -253,27 +245,6 @@ fun LocalApp(
                 backupNote?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall)
                 }
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("App theme", style = MaterialTheme.typography.titleSmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = themeMode == THEME_SYSTEM,
-                    onClick = { onSetThemeMode(THEME_SYSTEM) },
-                    label = { Text("System") },
-                )
-                FilterChip(
-                    selected = themeMode == THEME_LIGHT,
-                    onClick = { onSetThemeMode(THEME_LIGHT) },
-                    label = { Text("Light") },
-                )
-                FilterChip(
-                    selected = themeMode == THEME_DARK,
-                    onClick = { onSetThemeMode(THEME_DARK) },
-                    label = { Text("Dark") },
-                )
             }
         }
 

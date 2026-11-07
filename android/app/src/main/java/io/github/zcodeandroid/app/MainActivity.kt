@@ -34,12 +34,15 @@ import io.github.zcodeandroid.app.ui.conversation.ChatScreen
 import io.github.zcodeandroid.app.ui.conversation.ConversationViewModel
 import io.github.zcodeandroid.app.ui.home.HomeScreen
 import io.github.zcodeandroid.app.ui.home.HomeViewModel
+import io.github.zcodeandroid.app.ui.settings.SettingsScreen
 import io.github.zcodeandroid.app.ui.workspace.WorkspaceScreen
 import io.github.zcodeandroid.app.ui.workspace.WorkspaceViewModel
+import io.github.zcodeandroid.app.ui.theme.TEXT_SIZE_DEFAULT
 import io.github.zcodeandroid.app.ui.theme.THEME_DARK
 import io.github.zcodeandroid.app.ui.theme.THEME_LIGHT
 import io.github.zcodeandroid.app.ui.theme.THEME_SYSTEM
 import io.github.zcodeandroid.app.ui.theme.ZcodeTheme
+import io.github.zcodeandroid.app.ui.theme.textScaleFor
 
 /**
  * Entry point — NATIVE-ONLY product surface (owner decision 2026-11-05,
@@ -64,12 +67,14 @@ private sealed interface Route {
     data object Home : Route
     data class Chat(val taskId: String?, val openMostRecent: Boolean) : Route
     data class Workspace(val returnTo: Route) : Route
+    data class Settings(val returnTo: Route) : Route
     data class Diagnostics(val openBackup: Boolean, val returnTo: Route) : Route
 }
 
 class MainActivity : ComponentActivity() {
     private var route by mutableStateOf<Route>(Route.Home)
     private var themeMode by mutableStateOf(THEME_SYSTEM)
+    private var textSize by mutableStateOf(TEXT_SIZE_DEFAULT)
 
     private val prefs by lazy { getSharedPreferences("zcode_native", Context.MODE_PRIVATE) }
 
@@ -118,6 +123,7 @@ class MainActivity : ComponentActivity() {
             android.webkit.WebView.setWebContentsDebuggingEnabled(true)
         }
         themeMode = prefs.getInt(KEY_THEME_MODE, THEME_SYSTEM)
+        textSize = prefs.getInt(KEY_TEXT_SIZE, TEXT_SIZE_DEFAULT)
 
         if (savedInstanceState != null) {
             route = when (savedInstanceState.getString(KEY_ROUTE, KEY_ROUTE_HOME)) {
@@ -126,6 +132,7 @@ class MainActivity : ComponentActivity() {
                     savedInstanceState.getBoolean(KEY_ROUTE_OPEN_RECENT, true),
                 )
                 KEY_ROUTE_WORKSPACE -> Route.Workspace(Route.Home)
+                KEY_ROUTE_SETTINGS -> Route.Settings(Route.Home)
                 KEY_ROUTE_DIAGNOSTICS -> Route.Diagnostics(
                     savedInstanceState.getBoolean(KEY_ROUTE_DIAG_BACKUP, false),
                     Route.Home,
@@ -169,6 +176,7 @@ class MainActivity : ComponentActivity() {
                     THEME_DARK -> true
                     else -> isSystemInDarkTheme()
                 },
+                uiTextScale = textScaleFor(textSize),
             ) {
                 when (val running = runtimeState) {
                     is RuntimeState.Running -> when (val r = route) {
@@ -184,6 +192,7 @@ class MainActivity : ComponentActivity() {
                                     route = Route.Diagnostics(false, Route.Home)
                                 },
                                 onOpenWorkspace = { route = Route.Workspace(Route.Home) },
+                                onOpenSettings = { route = Route.Settings(Route.Home) },
                                 themeMode = themeMode,
                                 onSetThemeMode = { value ->
                                     themeMode = value
@@ -204,6 +213,7 @@ class MainActivity : ComponentActivity() {
                                     route = Route.Diagnostics(false, r)
                                 },
                                 onOpenWorkspace = { route = Route.Workspace(r) },
+                                onOpenSettings = { route = Route.Settings(r) },
                                 themeMode = themeMode,
                                 onSetThemeMode = { value ->
                                     themeMode = value
@@ -217,15 +227,24 @@ class MainActivity : ComponentActivity() {
                             )
                             WorkspaceScreen(vm = vm, onBack = { route = r.returnTo })
                         }
+                        is Route.Settings -> SettingsScreen(
+                            themeMode = themeMode,
+                            onSetThemeMode = { value ->
+                                themeMode = value
+                                prefs.edit().putInt(KEY_THEME_MODE, value).apply()
+                            },
+                            textSize = textSize,
+                            onSetTextSize = { value ->
+                                textSize = value
+                                prefs.edit().putInt(KEY_TEXT_SIZE, value).apply()
+                            },
+                            onOpenBackup = { route = Route.Diagnostics(true, r) },
+                            onBack = { route = r.returnTo },
+                        )
                         is Route.Diagnostics -> {
                             LocalApp(
                                 onBackToWeb = { route = r.returnTo },
                                 openBackupSection = r.openBackup,
-                                themeMode = themeMode,
-                                onSetThemeMode = { value ->
-                                    themeMode = value
-                                    prefs.edit().putInt(KEY_THEME_MODE, value).apply()
-                                },
                             )
                         }
                     }
@@ -273,6 +292,7 @@ class MainActivity : ComponentActivity() {
                 outState.putBoolean(KEY_ROUTE_OPEN_RECENT, r.openMostRecent)
             }
             is Route.Workspace -> outState.putString(KEY_ROUTE, KEY_ROUTE_WORKSPACE)
+            is Route.Settings -> outState.putString(KEY_ROUTE, KEY_ROUTE_SETTINGS)
             is Route.Diagnostics -> {
                 outState.putString(KEY_ROUTE, KEY_ROUTE_DIAGNOSTICS)
                 outState.putBoolean(KEY_ROUTE_DIAG_BACKUP, r.openBackup)
@@ -295,10 +315,12 @@ class MainActivity : ComponentActivity() {
         private const val KEY_ROUTE_HOME = "home"
         private const val KEY_ROUTE_CHAT = "chat"
         private const val KEY_ROUTE_WORKSPACE = "workspace"
+        private const val KEY_ROUTE_SETTINGS = "settings"
         private const val KEY_ROUTE_DIAGNOSTICS = "diagnostics"
         private const val KEY_ROUTE_TASK = "routeTaskId"
         private const val KEY_ROUTE_OPEN_RECENT = "routeOpenMostRecent"
         private const val KEY_ROUTE_DIAG_BACKUP = "routeDiagBackup"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_TEXT_SIZE = "text_size"
     }
 }

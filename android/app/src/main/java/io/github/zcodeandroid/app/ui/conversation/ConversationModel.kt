@@ -63,6 +63,9 @@ class ConversationViewModel(
     /** One selectable entry of the task's model config option (pinned shape). */
     data class ModelOptionUi(val value: String, val name: String, val providerId: String?)
 
+    /** One selectable entry of the task's mode config option (same pinned shape). */
+    data class ModeOptionUi(val value: String, val name: String)
+
     /**
      * Model sheet projection (FEATURE-MATRIX "Model / mode selection: Partial"
      * — the picker surface). Options come from getTaskConfigOptions filtered
@@ -77,6 +80,21 @@ class ConversationViewModel(
         val unavailableReason: String? = null,
     )
 
+    /**
+     * Mode sheet projection (parity row "Mode / reasoning level: E (UI)" —
+     * the picker surface converts it to a real UI). Options come from
+     * getTaskConfigOptions filtered to category=="mode" && type=="select";
+     * setMode is sent with the option's own value verbatim. If this runtime
+     * exposes no mode select option, the sheet says so — no mode strings are
+     * invented (§6: no invented request values).
+     */
+    data class ModeSheetUi(
+        val loading: Boolean,
+        val options: List<ModeOptionUi>,
+        val currentModeId: String?,
+        val unavailableReason: String? = null,
+    )
+
     data class UiState(
         val tasks: List<TaskRow> = emptyList(),
         val selectedTaskId: String? = null,
@@ -88,6 +106,8 @@ class ConversationViewModel(
         val modelName: String? = null,
         val modelSheet: ModelSheetUi? = null,
         val modelError: String? = null,
+        val modeSheet: ModeSheetUi? = null,
+        val modeError: String? = null,
     ) {
         val hasSelectedTask: Boolean get() = selectedTaskId != null
     }
@@ -184,6 +204,8 @@ class ConversationViewModel(
                 modelName = null,
                 modelSheet = null,
                 modelError = null,
+                modeSheet = null,
+                modeError = null,
             )
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -552,6 +574,98 @@ class ConversationViewModel(
     }
 
     fun closeModelSheet() = _state.update { it.copy(modelSheet = null, modelError = null) }
+
+    // ------------------------------------------------------------------ mode
+
+    /**
+     * Mode options are read from the SAME pinned getTaskConfigOptions
+     * contract as the model sheet (category=="mode" && type=="select") —
+     * the runtime's own values, never invented ones. currentValue carries
+     * the task's current mode when present.
+     */
+    fun openModeSheet() {
+        val api = api ?: return
+        val taskId = _state.value.selectedTaskId ?: run {
+            _state.update {
+                it.copy(
+                    modeSheet = ModeSheetUi(
+                        loading = false,
+                        options = emptyList(),
+                        currentModeId = null,
+                        unavailableReason = "Open a conversation first — the mode is chosen per task.",
+                    ),
+                )
+            }
+            return
+        }
+        _state.update {
+            it.copy(modeSheet = ModeSheetUi(loading = true, options = emptyList(), currentModeId = null))
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { api.getTaskConfigOptions(taskId) }
+                .onSuccess { options ->
+                    val modeOption = options.firstOrNull {
+                        (it["category"] as? String) == "mode" && (it["type"] as? String) == "select"
+                    }
+                    val entries = (modeOption?.get("options") as? List<*>).orEmpty().mapNotNull { v ->
+                        val vm = v as? Map<*, *> ?: return@mapNotNull null
+                        val value = vm["value"] as? String ?: return@mapNotNull null
+                        ModeOptionUi(
+                            value = value,
+                            name = (vm["name"] as? String) ?: value,
+                        )
+                    }
+                    _state.update {
+                        it.copy(
+                            modeSheet = ModeSheetUi(
+                                loading = false,
+                                options = entries,
+                                currentModeId = modeOption?.get("currentValue") as? String,
+                                unavailableReason = if (entries.isEmpty()) {
+                                    "This runtime exposes no selectable modes for this task."
+                                } else null,
+                            ),
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    RuntimeBus.append("getTaskConfigOptions (mode) failed: ${e.message}")
+                    _state.update {
+                        it.copy(
+                            modeSheet = ModeSheetUi(
+                                loading = false,
+                                options = emptyList(),
+                                currentModeId = null,
+                                unavailableReason = "Mode options unavailable: ${e.message}",
+                            ),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun closeModeSheet() = _state.update { it.copy(modeSheet = null, modeError = null) }
+
+    fun selectMode(option: ModeOptionUi) {
+        val api = api ?: return
+        val taskId = _state.value.selectedTaskId ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { api.setMode(taskId, option.value) }
+                .onSuccess {
+                    RuntimeBus.append("setMode -> ${option.value}")
+                    _state.update {
+                        it.copy(
+                            modeSheet = null,
+                            modeError = null,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    RuntimeBus.append("setMode failed: ${e.message}")
+                    _state.update { it.copy(modeError = e.message ?: "setMode failed") }
+                }
+        }
+    }
 
     fun selectModel(option: ModelOptionUi) {
         val api = api ?: return

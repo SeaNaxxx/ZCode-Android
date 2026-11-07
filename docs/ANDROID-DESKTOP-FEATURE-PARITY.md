@@ -16,31 +16,31 @@
 | Feature | Desktop (3.16.x pipeline) | Native Android | Runtime (embedded 3.16.2) | Status | Interaction differences | Evidence |
 |---|---|---|---|---|---|---|
 | Workspace/project selection | Sidebar projects (`project-sidebar/`), localStorage width, groups | Home = task list of the single device workspace; project auto-registered at server start | `project.saveProject` on first start | **B** | Desktop: multi-project tree. Android: one local workspace (`files/workspace`) by design; no project switcher | [SRC:ZcodeServer.kt] [CI:start-tap `[register] saveProject OK`] |
-| Task/session list | `TaskList.tsx`, grouped rows, plan badge | HomeScreen task cards (status badge, model in mono) | `listTasks`, workspace events | **B** | same data source; Android adds no groups yet; **no live refresh for foreign-created tasks — source-confirmed** (UI evidence D2 [V]: workspace events update badges only) | [CI:native-protocol listTasks] [EV:screen-after-restart] |
+| Task/session list | `TaskList.tsx`, grouped rows, plan badge | HomeScreen task cards (status badge, model in mono) | `listTasks`, workspace events | **B** | same data source; Android adds no groups yet; foreign-created tasks now appear on ON_RESUME `listTasks` re-read (D2 fix); badges stay event-driven | [CI:native-protocol listTasks] [EV:screen-after-restart] [SRC:HomeScreen.kt] |
 | Chat / conversation | `v4/SessionPane` (5982 ln), turn groups, ai-elements messages | ChatScreen: reversed LazyColumn, bubbles, minimal markdown | `sendPrompt`, `getTaskSnapshot`, 10 event types | **B** | Desktop: Lexical editor, attachments, mentions, slash commands. Android: plain composer + SAF attach; no mentions/slash | [CI:native-protocol sendPrompt+events] [EV: — Chat visuals [UV]] |
 | Message composition | Lexical + IME fallback + drafts store | `ChatInputBar` (24dp composer), `rememberSaveable` draft | same sendPrompt path | **B** | Touch-first vs keyboard-first; IME behavior on device [UV] | [SRC:ChatInputBar.kt] |
 | Agent activity / tool execution | 68 tool renderers, trajectory pane, background works | `ToolCard` (name/title/status; no output payload in pinned schema) | `tool_call`, `tool_call_update` events | **C** | Desktop renders rich per-tool bodies; Android renders compact cards — payload depth limited by event schema at pin | [SRC:ToolCallBlocks/] [SRC:ToolCard.kt] |
 | Agent loop (real run) | host utilityProcess + agent CLI | runtime driver: same agent bundle | `session/create`+`session/send` over stdio; Write/Bash/git effects | **A** (runtime-level) | identical agent runtime; Android gates UI claims by effects | [CI:agent-loop, agent-effects] |
 | Model selection | `ModelConfigSelect` dropdown, provider families | model-picker bottom sheet (`getTaskConfigOptions`/`setModel`) | `model-selection` channel | **B** | desktop hotkey Ctrl+M; Android sheet | [SRC:ConversationModel.kt:492–590] |
-| Mode / reasoning level | composer mode controls | **no UI** (`ZcodeApi.setMode` dead code) | `setMode` available | **E (UI)** | — | [SRC:ZcodeApi.kt:189] |
+| Mode / reasoning level | composer mode controls | Mode sheet driven by the runtime's own `getTaskConfigOptions` (category=="mode" && type=="select"); `setMode` sent with the option value verbatim; honest empty sheet when the runtime offers none | `setMode` available | **B** (runtime-driven) | desktop hotkeys; Android: ⋮ menu → Mode | [SRC:ConversationModel.kt] [SRC:ZcodeApi.kt:189] |
 | Permissions (agent asks) | ask-question / interaction surfaces | exactly-once `respondPermission` handling | `permission_request/response` | **B** | no visual evidence of the prompt UI [UV] | [SRC:ConversationModel.kt:473–486] |
 | Stop generation | composer stop | send/stop toggle button | `stopGeneration` | **B** | — | [SRC:ConversationModel.kt:464] |
 | Session persistence | tasksStorageWorker + DB | runtime-owned sqlite; survives force-stop | `provision-complete.json`, marker sha stable | **A** | — | [CI:persistence] [EV:screen-after-restart] |
 
 ## 2. Settings (desktop sections → Android plan)
 
-Desktop settings = state-based layered page, 18 sections in 3 groups (`settingsPageConfig.ts`) [SRC]. Android today: **theme only** (Home/Chat ⋮ + Diagnostics chips). Full native settings IA is a design deliverable pending approval — mapping:
+Desktop settings = state-based layered page, 18 sections in 3 groups (`settingsPageConfig.ts`) [SRC]. Android now ships a **native Settings screen** (Home/Chat ⋮ → Settings; Route+Screen pattern) with the desktop's group structure; appearance moved out of the Diagnostics overlay (single source). Mapping after the 2026-11 implementation wave:
 
 | Desktop section | Android status | Notes / limitation |
 |---|---|---|
-| General | **E (UI)** | no native screen; runtime-side settings untouched |
-| Appearance (system/zai-light/zai-dark, UI font 12–20, code themes ×2, line numbers, wrap, code font) | **C** — theme mode only (system/light/dark chips; prefs `theme_mode`) | upstream value set documented; code-preview settings absent; token sync mechanism required before shipping |
-| Model (provider settings) | **E (UI)**; runtime seeds mock provider config | provider config file runtime-owned |
+| General | **C** | native Settings General group: device/runtime facts (version, model, ABIs, runtime state); runtime-side settings untouched |
+| Appearance (system/zai-light/zai-dark, UI font 12–20, code themes ×2, line numbers, wrap, code font) | **B** (theme modes) / **C** (text size) | theme mode System/Light/Dark chips (Settings + ⋮ quick cycle; prefs `theme_mode`); three-step UI text-size scale (Small/Default/Large → Density fontScale ×0.90/1.00/1.15, composes with the system accessibility scale); code-preview settings absent; brand-token decision note below stands |
+| Model (provider settings) | **C** | Settings Model group points to the per-task picker (top-bar Model button); provider config file runtime-owned |
 | Browser Use | **D** | desktop computer-use stack; no Android runtime equivalent |
 | Keyboard Shortcuts | **D/C** | desktop shortcut registry; Android: external keyboard support unevidenced |
-| Memory / Subagents / Plugins / MCP / Skills / Commands / Hooks | **E (UI)** | features exist upstream; not surfaced; no fake UI allowed (10.3) |
+| Memory / Subagents / Plugins / MCP / Skills / Commands / Hooks | **E (UI, honest)** | listed in Settings Agent-capabilities group with an explicit "Not on Android" state (10.3); no fake toggles |
 | Remote devices | **D** | desktop relay removed from app (2026-11-04 decision) |
-| Usage stats / Archives | **E (UI)** | desktop `usage-stats/` + `ArchiveManagement` |
+| Usage stats / Archives | **E (UI, honest)** | listed in Settings Data group with "Not on Android" |
 | Computer Use | **D** | platform-gated on desktop already |
 
 ## 3. Workspace, files, terminal
@@ -57,10 +57,10 @@ Desktop settings = state-based layered page, 18 sections in 3 groups (`settingsP
 
 | Capability | Desktop | Native Android | Status |
 |---|---|---|---|
-| Theme modes | system / zai-light / zai-dark (`zcode-theme`) | system / light / dark chips (prefs) | **B** — semantic tokens differ pending approval (brand black/white vs current blue) |
+| Theme modes | system / zai-light / zai-dark (`zcode-theme`) | Settings chips + ⋮ quick cycle (prefs) | **B** — semantic tokens differ pending approval (brand black/white vs current blue) |
 | Dark propagation | html classes + CSS vars | Compose `darkColorScheme` via system config (`cmd uimode` verified) | **A** [CI:dark-mode legs A/B] [EV:screens 8–9] |
 | WebView↔native theme sync | n/a (file:// renderer) | **requires explicit mechanism** — Compose theme does not change WebView CSS; not built | **E** (documented per 10.5) |
-| UI font size 12–20 | `--ui-font-size` token | not implemented | **E** |
+| UI font size 12–20 | `--ui-font-size` token | **C** — native three-step text-size scale (0.90/1.00/1.15 multiplier over the system font scale; sp-only, dp geometry untouched); mobile simplification of the desktop slider |
 | Independent code themes / line numbers / wrap / code font | `zcode-code-preview-settings` | not implemented | **E** |
 
 ## 5. Desktop WebView experience on Android (10.2)
@@ -84,4 +84,13 @@ Desktop settings = state-based layered page, 18 sections in 3 groups (`settingsP
 
 - **Recognizably ZCode:** partial — layout/terminology/mono conventions already match; **brand tokens do not** (blue vs upstream black/white) → design-system decision pending owner approval.
 - **Functionally parity-complete areas:** provisioning, server lifecycle, agent loop, task persistence, theme propagation, read-only workspace.
-- **Parity gaps that matter:** settings coverage (§2), tool-activity depth (§1), editor/terminal (§3), appearance granularity (§4), DeX/WebView desktop surface (§5).
+- **Parity gaps that matter:** tool-activity depth (§1), editor/terminal (§3), appearance granularity beyond text size (§4), DeX/WebView desktop surface (§5).
+
+## 8. Implementation wave 2026-11 (owner-approved "start implementation")
+
+| Change | Parity effect | Evidence class |
+|---|---|---|
+| Native Settings screen (`ui/settings/SettingsScreen.kt`, Route.Settings) with General/Model/Agent-capabilities/Data groups; theme moved out of Diagnostics | §2 General E→C, Appearance E→B/C, Model E→C, capability rows now honest E listings | [SRC] — CI/device verification pending |
+| UI text-size setting (Small/Default/Large) plumbed through `ZcodeTheme(uiTextScale=…)` as a Density fontScale multiplier | §4 UI font size E→C | [SRC] — visual verification pending |
+| Mode sheet: `getTaskConfigOptions` category=="mode" + `setMode` (option value verbatim; honest empty sheet) | §1 Mode E(UI)→B | [SRC] — runtime behavior on emulator/device pending |
+| Home ON_RESUME `listTasks` refresh (D2) | §1 task list: foreign-created tasks no longer restart-gated | [SRC] — CI/device verification pending |

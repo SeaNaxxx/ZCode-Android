@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -28,6 +29,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,11 +38,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import io.github.zcodeandroid.app.ui.components.EmptyState
 import io.github.zcodeandroid.app.ui.components.ErrorState
 import io.github.zcodeandroid.app.ui.components.StatusBadge
@@ -58,6 +64,11 @@ import io.github.zcodeandroid.app.ui.theme.ZcodeThemeValues
  * badges, ONE primary action (the new-conversation FAB), generous
  * whitespace. No gradients, no shadows, no decoration.
  *
+ * Task-list freshness (UI-evidence finding D2): foreign-created tasks were
+ * invisible until restart because the list loaded once. ON_RESUME now
+ * re-reads listTasks (the first resume is skipped — start() just fetched).
+ * Badges keep their event-driven source; the fetch is the honest fallback.
+ *
  * CI marker: this is the start surface, so the "NativeConversation:
  * surface visible" contract log fires here (and in the chat screen).
  * The tag text is the established CI contract for "the native product
@@ -71,6 +82,7 @@ fun HomeScreen(
     onNewChat: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenWorkspace: () -> Unit,
+    onOpenSettings: () -> Unit,
     themeMode: Int,
     onSetThemeMode: (Int) -> Unit,
 ) {
@@ -83,6 +95,20 @@ fun HomeScreen(
             android.util.Log.i("NativeConversation", "surface visible dark=$dark")
         }
         LaunchedEffect(Unit) { vm.start() }
+        // Refresh on resume (UI-evidence finding D2: foreign-created tasks
+        // were invisible until restart). The Activity context is the
+        // LifecycleOwner — lifecycle-runtime only, no extra dependency.
+        val context = LocalContext.current
+        DisposableEffect(context) {
+            val owner = context as? LifecycleOwner
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) vm.refresh()
+            }
+            owner?.lifecycle?.addObserver(observer)
+            onDispose {
+                owner?.lifecycle?.removeObserver(observer)
+            }
+        }
     }
 
     HomeScreenContent(
@@ -92,6 +118,7 @@ fun HomeScreen(
         onNewChat = onNewChat,
         onOpenDiagnostics = onOpenDiagnostics,
         onOpenWorkspace = onOpenWorkspace,
+        onOpenSettings = onOpenSettings,
         onSetThemeMode = onSetThemeMode,
         onDismissError = vm::dismissError,
         onRefresh = vm::refresh,
@@ -107,6 +134,7 @@ private fun HomeScreenContent(
     onNewChat: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenWorkspace: () -> Unit,
+    onOpenSettings: () -> Unit,
     onSetThemeMode: (Int) -> Unit,
     onDismissError: () -> Unit,
     onRefresh: () -> Unit,
@@ -132,6 +160,11 @@ private fun HomeScreenContent(
                         Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Settings") },
+                            leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                            onClick = { menuOpen = false; onOpenSettings() },
+                        )
                         DropdownMenuItem(
                             text = { Text("Workspace") },
                             leadingIcon = { Icon(Icons.Filled.Folder, contentDescription = null) },
@@ -309,6 +342,7 @@ private fun HomeScreenPreview() {
             ),
             themeMode = THEME_SYSTEM,
             onOpenTask = {}, onNewChat = {}, onOpenDiagnostics = {}, onOpenWorkspace = {},
+            onOpenSettings = {},
             onSetThemeMode = {}, onDismissError = {}, onRefresh = {},
         )
     }
@@ -330,6 +364,7 @@ private fun HomeScreenDarkPreview() {
             ),
             themeMode = THEME_DARK,
             onOpenTask = {}, onNewChat = {}, onOpenDiagnostics = {}, onOpenWorkspace = {},
+            onOpenSettings = {},
             onSetThemeMode = {}, onDismissError = {}, onRefresh = {},
         )
     }
@@ -343,6 +378,7 @@ private fun HomeScreenEmptyPreview() {
             state = HomeViewModel.UiState(conn = HomeViewModel.Conn.CONNECTING),
             themeMode = THEME_LIGHT,
             onOpenTask = {}, onNewChat = {}, onOpenDiagnostics = {}, onOpenWorkspace = {},
+            onOpenSettings = {},
             onSetThemeMode = {}, onDismissError = {}, onRefresh = {},
         )
     }

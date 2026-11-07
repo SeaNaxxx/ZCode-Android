@@ -26,6 +26,8 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -93,6 +95,7 @@ fun ChatScreen(
     onBack: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenWorkspace: () -> Unit,
+    onOpenSettings: () -> Unit,
     themeMode: Int,
     onSetThemeMode: (Int) -> Unit,
 ) {
@@ -205,10 +208,25 @@ fun ChatScreen(
                         leadingIcon = { Icon(Icons.Filled.List, contentDescription = null) },
                         onClick = { menuOpen = false; showHistory = true },
                     )
+                    // Mode picker (parity row "Mode / reasoning level"): the
+                    // runtime's own config options drive the sheet; when the
+                    // task has none, the sheet says so.
+                    DropdownMenuItem(
+                        text = { Text("Mode") },
+                        leadingIcon = { Icon(Icons.Filled.Tune, contentDescription = null) },
+                        enabled = state.hasSelectedTask &&
+                            state.conn == ConversationViewModel.Conn.READY,
+                        onClick = { menuOpen = false; vm.openModeSheet() },
+                    )
                     DropdownMenuItem(
                         text = { Text("Workspace") },
                         leadingIcon = { Icon(Icons.Filled.Folder, contentDescription = null) },
                         onClick = { menuOpen = false; onOpenWorkspace() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Settings") },
+                        leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                        onClick = { menuOpen = false; onOpenSettings() },
                     )
                     DropdownMenuItem(
                         text = { Text("Diagnostics") },
@@ -381,6 +399,64 @@ fun ChatScreen(
                         StatusDot(
                             ZcodeThemeValues.statusColors.completed,
                             contentDescription = "current model",
+                        )
+                    }
+                    Text(
+                        option.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            Spacer(Modifier.padding(ZcodeThemeValues.spacing.xl))
+        }
+    }
+
+    state.modeSheet?.let { sheet ->
+        ModalBottomSheet(onDismissRequest = { vm.closeModeSheet() }) {
+            SectionHeader("Mode")
+            if (sheet.loading) {
+                Text(
+                    "Reading mode options…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(ZcodeThemeValues.spacing.lg),
+                )
+            }
+            sheet.unavailableReason?.let { reason ->
+                Text(
+                    reason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(ZcodeThemeValues.spacing.lg),
+                )
+            }
+            state.modeError?.let { message ->
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(ZcodeThemeValues.spacing.lg),
+                )
+            }
+            sheet.options.forEach { option ->
+                val selected = option.value == sheet.currentModeId
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { vm.selectMode(option) }
+                        .padding(
+                            horizontal = ZcodeThemeValues.spacing.lg,
+                            vertical = ZcodeThemeValues.spacing.md,
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(ZcodeThemeValues.spacing.sm),
+                ) {
+                    if (selected) {
+                        StatusDot(
+                            ZcodeThemeValues.statusColors.completed,
+                            contentDescription = "current mode",
                         )
                     }
                     Text(

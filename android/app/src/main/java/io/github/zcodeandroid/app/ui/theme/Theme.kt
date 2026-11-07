@@ -7,8 +7,11 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.Density
+import androidx.compose.ui.platform.LocalDensity
 
 /**
  * Theme (REVISED architecture §5 Phase 1 + Phase 2 UI brief). Full Material 3
@@ -99,12 +102,39 @@ private val LightColorScheme = lightColorScheme(
     onErrorContainer = Color(0xFF410E0B),
 )
 
+/**
+ * UI text-size setting (parity §4 "UI font size"). Owned by the Android UI
+ * layer (§7 state ownership: theme/visual preferences). Implemented as a
+ * multiplier over the system font scale so the user's accessibility size
+ * composes with ours — sp text scales, dp layout does not.
+ */
+const val TEXT_SIZE_SMALL = 0
+const val TEXT_SIZE_DEFAULT = 1
+const val TEXT_SIZE_LARGE = 2
+
+fun textScaleFor(textSize: Int): Float = when (textSize) {
+    TEXT_SIZE_SMALL -> 0.90f
+    TEXT_SIZE_LARGE -> 1.15f
+    else -> 1.0f
+}
+
 @Composable
 fun ZcodeTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    uiTextScale: Float = 1f,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    // Provide a scaled Density so every sp-based style follows the text-size
+    // setting (the desktop --ui-font-size parity row) without rebuilding the
+    // Typography or touching dp geometry.
+    val baseDensity = LocalDensity.current
+    val scaledDensity = remember(baseDensity, uiTextScale) {
+        Density(
+            density = baseDensity.density,
+            fontScale = baseDensity.fontScale * uiTextScale,
+        )
+    }
     val statusColors = if (darkTheme) {
         ZcodeStatusColors(StatusRunDark, StatusOkDark, StatusFailDark, StatusPendingDark)
     } else {
@@ -116,6 +146,7 @@ fun ZcodeTheme(
         ZcodeTerminalColors(TerminalLight, TerminalOnLight, TerminalAccentLight)
     }
     CompositionLocalProvider(
+        LocalDensity provides scaledDensity,
         LocalZcodeStatusColors provides statusColors,
         LocalZcodeSpacing provides ZcodeSpacing(),
         LocalZcodeRadii provides ZcodeRadii(),
