@@ -10,8 +10,8 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.Density
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 
 /**
  * Theme (REVISED architecture §5 Phase 1 + Phase 2 UI brief). Full Material 3
@@ -118,6 +118,17 @@ fun textScaleFor(textSize: Int): Float = when (textSize) {
     else -> 1.0f
 }
 
+/**
+ * Version-proof Density construction: the platform factory function has
+ * moved across Compose releases, but the ui.unit Density interface (two
+ * properties + default method implementations) is stable. CI run
+ * 42350534258 caught the unresolved-reference class.
+ */
+private class ScaledDensity(
+    override val density: Float,
+    override val fontScale: Float,
+) : Density
+
 @Composable
 fun ZcodeTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -130,7 +141,7 @@ fun ZcodeTheme(
     // Typography or touching dp geometry.
     val baseDensity = LocalDensity.current
     val scaledDensity = remember(baseDensity, uiTextScale) {
-        Density(
+        ScaledDensity(
             density = baseDensity.density,
             fontScale = baseDensity.fontScale * uiTextScale,
         )
