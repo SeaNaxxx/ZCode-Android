@@ -718,3 +718,8 @@ pushed as 36cf3d6. Run 42329950587 failed at `:app:compileDebugKotlin`:
 watchdog field; fixed with `id.toLong()` (no behavior change). All other
 patch hunks compiled; unit tests were not reached. Evidence: job
 128273952290 log (`e: ...:381:25 Argument type mismatch`).
+Follow-up (same run id): the unit-test step also caught the patch's ws
+exception match relying on `java.net.URL`, which has no "ws" scheme
+handler (`URL("ws://…")` → MalformedURLException). The product-socket
+exception now matches the ws:// loopback authority textually; downloads
+(path never passes `allowLoopbackProductSocket`) are unchanged.

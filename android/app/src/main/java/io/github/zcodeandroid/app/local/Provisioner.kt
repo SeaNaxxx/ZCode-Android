@@ -464,11 +464,17 @@ object Provisioner {
     internal fun requireSafeHttpUrl(url: String, allowLoopbackProductSocket: Boolean = false) {
         // The product-socket exception is ws:// loopback ONLY — checked first
         // so the download path below never treats it as an http scheme.
-        if (allowLoopbackProductSocket) {
-            val raw = runCatching { URL(url) }.getOrNull()
-            if (raw != null && raw.protocol == "ws" &&
-                raw.host in setOf("127.0.0.1", "localhost", "::1")
-            ) return
+        // java.net.URL has no handler for the "ws" scheme (run 42330340224:
+        // URL("ws://...") threw MalformedURLException, so the URL-based match
+        // below could never fire); the ws exception is matched textually.
+        if (allowLoopbackProductSocket && url.trim().startsWith("ws://", ignoreCase = true)) {
+            val authority = url.trim().substring(5)
+                .substringBefore('/').substringBefore('?').substringBefore('#')
+            val wsHost = (
+                if (authority.startsWith("[")) authority.substringBefore(']').removePrefix("[")
+                else authority.substringBefore(':')
+                ).lowercase()
+            if (wsHost in setOf("127.0.0.1", "localhost", "::1")) return
         }
         val u = URL(url)
         if (u.protocol !in setOf("http", "https")) {
